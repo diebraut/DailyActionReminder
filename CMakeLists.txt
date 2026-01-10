@@ -18,6 +18,7 @@ qt_add_qml_module(appDailyActionReminder
 
         QML_FILES ActionDelegate.qml
         RESOURCES
+        SOURCES appstorage.h appstorage.cpp
 )
 qt_add_resources(appDailyActionReminder
     "qml"
