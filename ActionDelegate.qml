@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQml
 
+
 Rectangle {
     id: root
     radius: 14
@@ -21,7 +22,7 @@ Rectangle {
     property string fixedTime
     property string startTime
     property string endTime
-    property int intervalSeconds
+    property int intervalMinutes
     property bool soundEnabled
     property string sound
     property int soundDuration
@@ -30,6 +31,9 @@ Rectangle {
 
     // keep last valid non-empty name
     property string _lastNonEmptyActionText: ""
+
+    // Anzeige-Name: wenn leer -> Bell
+    readonly property string soundDisplayName: (root.sound && root.sound.trim().length > 0) ? root.sound.trim() : "Bell"
 
     signal toggleRequested(int idx)
     signal deleteRequested(int idx)
@@ -40,10 +44,11 @@ Rectangle {
     signal fixedTimeEdited(string v)
     signal startTimeEdited(string v)
     signal endTimeEdited(string v)
-    signal intervalSecondsEdited(int v)
+    signal intervalMinutesEdited(int v)
     signal soundEdited(string v)
     signal soundDurationEdited(int v)
     signal soundEnabledEdited(bool v)
+    signal bellPreviewRequested()
 
     function _setIfChangedString(propName, newValue, sig) {
         if (root[propName] !== newValue) {
@@ -76,9 +81,15 @@ Rectangle {
             if (endTime === undefined || endTime === null) {
                 _setIfChangedString("endTime", "", endTimeEdited)
             }
-            if (intervalSeconds <= 0) {
-                _setIfChangedInt("intervalSeconds", 1800, intervalSecondsEdited)
+            // ✅ Default Minuten (nicht 1800)
+            if (intervalMinutes <= 0) {
+                _setIfChangedInt("intervalMinutes", 60, intervalMinutesEdited)
             }
+        }
+
+        // ✅ Default Sound-Name
+        if (!sound || sound.trim().length === 0) {
+            _setIfChangedString("sound", "Bell", soundEdited)
         }
 
         if (soundDuration === undefined || soundDuration === null) {
@@ -116,7 +127,6 @@ Rectangle {
         title: "Aktion löschen?"
         standardButtons: Dialog.Yes | Dialog.No
 
-        // feste Breite -> kein implicitWidth-Kreis mehr
         width: 320
 
         contentItem: Item {
@@ -135,6 +145,40 @@ Rectangle {
         }
 
         onAccepted: root.deleteRequested(root.delegateIndex)
+    }
+
+    // ===== Dummy Sound Picker =====
+    Dialog {
+        id: soundDialog
+        modal: true
+        title: "Ton wählen"
+        standardButtons: Dialog.Cancel
+        width: 320
+
+        contentItem: Item {
+            implicitWidth: soundDialog.width
+            implicitHeight: col.implicitHeight + 20
+
+            ColumnLayout {
+                id: col
+                anchors.fill: parent
+                anchors.margins: 10
+                spacing: 8
+
+                Repeater {
+                    model: ["Bell", "Beep", "Chime"]
+                    delegate: Button {
+                        text: modelData
+                        Layout.fillWidth: true
+                        onClicked: {
+                            root.sound = modelData
+                            root.soundEdited(modelData)
+                            soundDialog.close()
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ===== robust inline fields (label + input next to each other) =====
@@ -302,9 +346,9 @@ Rectangle {
     function fixedTimeText() {
         return (root.fixedTime && root.fixedTime.length) ? root.fixedTime : "00:00"
     }
-    function intervalSecondsText() {
-        var sec = (root.intervalSeconds > 0) ? root.intervalSeconds : 1800
-        return sec + " s"
+    function intervalMinutesText() {
+        var minutes = (root.intervalMinutes > 0) ? root.intervalMinutes : 60
+        return minutes + " Minuten"
     }
 
     Item {
@@ -355,7 +399,7 @@ Rectangle {
                                 spacing: 6
                                 Layout.fillWidth: true
                                 Text { text: "Feste Uhrzeit:"; font.pixelSize: 13; color: "#555555" }
-                                Text { text: root.fixedTimeText(); font.pixelSize: 13; color: "#444444"; elide: Text.ElideRight }
+                                Text { text: root.fixedTimeText() + " Uhr"; font.pixelSize: 13; color: "#444444"; elide: Text.ElideRight }
                                 Item { Layout.fillWidth: true }
                             }
 
@@ -364,7 +408,7 @@ Rectangle {
                                 spacing: 6
                                 Layout.fillWidth: true
                                 Text { text: "Intervall:"; font.pixelSize: 13; color: "#555555" }
-                                Text { text: root.intervalSecondsText(); font.pixelSize: 13; color: "#444444" }
+                                Text { text: root.intervalMinutesText(); font.pixelSize: 13; color: "#444444" }
                                 Item { Layout.fillWidth: true }
                             }
                         }
@@ -402,17 +446,13 @@ Rectangle {
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: function(mouse) {
                                         mouse.accepted = true
-                                        const nv = !root.soundEnabled
-                                        console.log("[Delegate] idx=", root.delegateIndex, "soundEnabled:", root.soundEnabled, "->", nv)
-                                        root.soundEnabled = nv
-                                        root.soundEnabledEdited(nv)
-
+                                        console.log("[Delegate] sound icon clicked idx=", root.delegateIndex, "sound=", root.soundDisplayName)
+                                        root.bellPreviewRequested()
                                     }
                                 }
                             }
                         }
 
-                        // Dezent: kleines X, hellgrau, keine "Alarmfarbe"
                         Rectangle {
                             id: deleteChip
                             width: 28
@@ -472,7 +512,6 @@ Rectangle {
                         Layout.fillWidth: true
                         spacing: 14
 
-                        // Action name editable (prevent empty)
                         InlineTextField {
                             id: actionNameField
                             label: "Aktion"
@@ -494,7 +533,7 @@ Rectangle {
                             }
                         }
 
-                        // Mode buttons (immediate local + model)
+                        // Mode buttons
                         RowLayout {
                             spacing: 12
 
@@ -530,9 +569,9 @@ Rectangle {
                                         root.mode = "interval"
                                         root.modeEdited("interval")
 
-                                        if (root.intervalSeconds <= 0) {
-                                            root.intervalSeconds = 1800
-                                            root.intervalSecondsEdited(1800)
+                                        if (root.intervalMinutes <= 0) {
+                                            root.intervalMinutes = 60
+                                            root.intervalMinutesEdited(60)
                                         }
                                         if (root.startTime === undefined || root.startTime === null) {
                                             root.startTime = ""
@@ -604,15 +643,15 @@ Rectangle {
                             }
 
                             InlineNumberField {
-                                label: "Intervall (Sekunden)"
-                                value: root.intervalSeconds
+                                label: "Intervall (Minuten)"
+                                value: root.intervalMinutes
                                 minValue: 1
-                                maxValue: 24 * 60 * 60
+                                maxValue: 24 * 60
                                 minInputWidth: 170
                                 preferredInputWidth: 220
                                 onValueEdited: function(v) {
-                                    root.intervalSeconds = v
-                                    root.intervalSecondsEdited(v)
+                                    root.intervalMinutes = v
+                                    root.intervalMinutesEdited(v)
                                 }
                             }
                         }
@@ -620,33 +659,86 @@ Rectangle {
                         // ---- SOUND ----
                         SectionHeader { title: "Ton" }
 
-                        ColumnLayout {
-                            spacing: 10
+                        // ✅ NEU: Icon + Name + Button "Ändern" (kein Eingabefeld)
+                        RowLayout {
                             Layout.fillWidth: true
+                            spacing: 10
 
-                            InlineTextField {
-                                label: "Datei / Name"
-                                value: root.sound
-                                placeholder: "z.B. beep.wav"
-                                minInputWidth: 170
-                                preferredInputWidth: 220
-                                onValueEdited: function(v) {
-                                    root.sound = v
-                                    root.soundEdited(v)
+                            // Icon (≈ +50%) + klickbar
+                            Item {
+                                implicitWidth: 30
+                                implicitHeight: 30
+                                Layout.preferredWidth: 30
+                                Layout.preferredHeight: 30
+                                Layout.alignment: Qt.AlignVCenter
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "🔊"
+                                    font.pixelSize: 24
+                                    color: "#222222"
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: function(mouse) {
+                                        mouse.accepted = true
+                                        console.log("[Delegate] bell preview requested (edit) idx=", root.delegateIndex,
+                                                    " sound=", root.soundDisplayName,
+                                                    " enabled=", root.soundEnabled)
+                                        root.bellPreviewRequested()
+                                    }
                                 }
                             }
 
-                            InlineNumberField {
-                                label: "Dauer (Sekunden)"
-                                value: root.soundDuration
-                                minValue: 0
-                                maxValue: 120
-                                minInputWidth: 170
-                                preferredInputWidth: 220
-                                onValueEdited: function(v) {
-                                    root.soundDuration = v
-                                    root.soundDurationEdited(v)
+                            // Sound-Name -> schwarz
+                            Text {
+                                text: root.soundDisplayName
+                                font.pixelSize: 14
+                                color: "#000000"          // ✅ schwarz
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignVCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            // "Ändern" Button im Stil der Mode-Buttons (dunkelgrau)
+                            Rectangle {
+                                width: 120
+                                height: 36
+                                radius: 8
+                                color: "#d0d0d0"        // ✅ dunkelgrau (helles Dunkelgrau)
+                                border.color: "#b0b0b0" // optional: Rahmen für mehr Kontrast
+                                Layout.alignment: Qt.AlignVCenter
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "Ändern"
+                                    color: "#000000"    // ✅ schwarz
+                                    font.pixelSize: 14
                                 }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: function(mouse) {
+                                        mouse.accepted = true
+                                        console.log("[Delegate] change sound clicked idx=", root.delegateIndex)
+                                    }
+                                }
+                            }
+                        }
+                        InlineNumberField {
+                            label: "Dauer (Sekunden)"
+                            value: root.soundDuration
+                            minValue: 0
+                            maxValue: 120
+                            minInputWidth: 170
+                            preferredInputWidth: 220
+                            onValueEdited: function(v) {
+                                root.soundDuration = v
+                                root.soundDurationEdited(v)
                             }
                         }
                     }

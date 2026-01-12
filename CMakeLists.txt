@@ -4,7 +4,7 @@ project(DailyActionReminder VERSION 0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick)
+find_package(Qt6 REQUIRED COMPONENTS Quick Multimedia)
 
 qt_standard_project_setup(REQUIRES 6.8)
 
@@ -26,6 +26,7 @@ qt_add_resources(appDailyActionReminder
     FILES
         Main.qml
         ActionDelegate.qml
+        sounds/bell.wav
 )
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
@@ -48,10 +49,7 @@ target_link_libraries(appDailyActionReminder
     PRIVATE
         Qt6::Quick
         Qt6::QuickControls2
-)
-
-target_link_libraries(appDailyActionReminder
-    PRIVATE Qt6::Quick
+        Qt6::Multimedia
 )
 
 include(GNUInstallDirs)
