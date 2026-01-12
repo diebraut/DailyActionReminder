@@ -22,6 +22,51 @@ ApplicationWindow {
     }
 
     // -------------------------
+    // Sound mapping (Name -> qrc:/sounds/...)
+    // -------------------------
+    // ⚠️ Dateinamen müssen so in deiner .qrc liegen:
+    // qrc:/sounds/bell.wav
+    // qrc:/sounds/soft_chime.wav
+    // qrc:/sounds/beep_short.wav
+    // qrc:/sounds/beep_double.wav
+    // qrc:/sounds/pop_click.wav
+    // qrc:/sounds/wood_tap.wav
+    // qrc:/sounds/marimba_hit.wav
+    // qrc:/sounds/triangle_ping.wav
+    // qrc:/sounds/low_gong.wav
+    // qrc:/sounds/airy_whoosh.wav
+    property var soundMap: ({
+        "Bell":         "qrc:/sounds/bell.wav",
+        "Soft Chime":   "qrc:/sounds/soft_chime.wav",
+        "Beep Short":   "qrc:/sounds/beep_short.wav",
+        "Beep Double":  "qrc:/sounds/beep_double.wav",
+        "Pop Click":    "qrc:/sounds/pop_click.wav",
+        "Wood Tap":     "qrc:/sounds/wood_tap.wav",
+        "Marimba Hit":  "qrc:/sounds/marimba_hit.wav",
+        "Triangle Ping":"qrc:/sounds/triangle_ping.wav",
+        "Low Gong":     "qrc:/sounds/low_gong.wav",
+        "Airy Whoosh":  "qrc:/sounds/airy_whoosh.wav"
+    })
+
+    property var soundChoices: [
+        "Bell",
+        "Soft Chime",
+        "Beep Short",
+        "Beep Double",
+        "Pop Click",
+        "Wood Tap",
+        "Marimba Hit",
+        "Triangle Ping",
+        "Low Gong",
+        "Airy Whoosh"
+    ]
+
+    function soundSourceForName(name) {
+        const key = (typeof name === "string" && name.trim().length > 0) ? name.trim() : "Bell"
+        return soundMap[key] || soundMap["Bell"]
+    }
+
+    // -------------------------
     // State
     // -------------------------
     property bool allSoundsDisabled: false
@@ -52,7 +97,7 @@ ApplicationWindow {
                 startTime: (o.startTime ?? ""),
                 endTime: (o.endTime ?? ""),
                 intervalMinutes: intervalMinutes,
-                sound: (o.sound ?? ""),
+                sound: (o.sound ?? "Bell"),
                 soundDuration: (o.soundDuration ?? 0),
                 soundEnabled: (o.soundEnabled ?? true)
             })
@@ -85,7 +130,7 @@ ApplicationWindow {
                     startTime: (typeof o.startTime === "string") ? o.startTime : "",
                     endTime: (typeof o.endTime === "string") ? o.endTime : "",
                     intervalMinutes: intervalMinutes,
-                    sound: (typeof o.sound === "string") ? o.sound : "",
+                    sound: (typeof o.sound === "string" && o.sound.trim().length > 0) ? o.sound : "Bell",
                     soundDuration: (typeof o.soundDuration === "number") ? o.soundDuration : parseInt(o.soundDuration || 0),
                     soundEnabled: (typeof o.soundEnabled === "boolean") ? o.soundEnabled : true
                 })
@@ -179,68 +224,77 @@ ApplicationWindow {
     }
 
     onClosing: function(close) {
-        bellSfx.stop()
+        previewSfx.stop()
         saveNow()
     }
 
+    // -------------------------
+    // Preview SoundEffect (dynamisch per source)
+    // -------------------------
+    property string desiredPreviewSource: "qrc:/sounds/bell.wav"
+
     SoundEffect {
-        id: bellSfx
-        source: "qrc:/sounds/bell.wav"
+        id: previewSfx
+        source: app.desiredPreviewSource
         volume: 1.0
         muted: false
 
         onStatusChanged: {
-            //console.log("[Main:SFX] status=", status, "source=", source, "err=", (errorString || ""))
             if (status === SoundEffect.Error) {
-                app.resetBellSfx("SoundEffect.Error")
+                app.resetPreviewSfx("SoundEffect.Error")
             }
-        }
-        onPlayingChanged: {
-            console.log("[Main:SFX] playing=", playing)
         }
     }
 
-    function playBellPreview() {
-        console.log("[Main] playBellPreview() status=", bellSfx.status, "playing=", bellSfx.playing)
+    function playSoundPreview(soundName) {
+        const src = soundSourceForName(soundName)
+        desiredPreviewSource = src
 
-        if (bellSfx.status === SoundEffect.Error) {
-            resetBellSfx("playBellPreview saw Error")
-            // nach Reset abspielen (leicht verzögert, damit source neu geladen ist)
-            Qt.callLater(function() { bellSfx.stop(); bellSfx.play() })
+        if (previewSfx.source !== src)
+            previewSfx.source = src
+
+        // (deine Logs kannst du bei Bedarf wieder anmachen)
+        // console.log("[Main] playSoundPreview name=", soundName, "src=", src, "status=", previewSfx.status)
+
+        if (previewSfx.status === SoundEffect.Error) {
+            resetPreviewSfx("playSoundPreview saw Error")
+            Qt.callLater(function() { previewSfx.stop(); previewSfx.play() })
             return
         }
 
-        bellSfx.stop()
-        bellSfx.play()
+        previewSfx.stop()
+        previewSfx.play()
     }
+
+    // backward-compat (falls du irgendwo noch Bell direkt callst)
+    function playBellPreview() { playSoundPreview("Bell") }
 
     MediaDevices {
         id: mediaDevices
-
-        onDefaultAudioOutputChanged: app.resetBellSfx("defaultAudioOutputChanged")
-        onAudioOutputsChanged: app.resetBellSfx("audioOutputsChanged")
+        onDefaultAudioOutputChanged: app.resetPreviewSfx("defaultAudioOutputChanged")
+        onAudioOutputsChanged: app.resetPreviewSfx("audioOutputsChanged")
     }
 
     Timer {
-        id: bellResetDebounce
+        id: previewResetDebounce
         interval: 150
         repeat: false
         property string reason: ""
 
         onTriggered: {
-            console.log("[Main:SFX] RESET now reason=", reason)
-            bellSfx.stop()
-            // “hart” neu laden
-            bellSfx.source = ""
-            bellSfx.source = "qrc:/sounds/bell.wav"
+            console.log("[Main:SFX] RESET now reason=", reason, " src=", app.desiredPreviewSource)
+            previewSfx.stop()
+            previewSfx.source = ""
+            previewSfx.source = app.desiredPreviewSource
         }
     }
 
-    function resetBellSfx(reason) {
-        console.log("[Main:SFX] resetBellSfx request reason=", reason,
-                    " status=", bellSfx.status, " playing=", bellSfx.playing)
-        bellResetDebounce.reason = reason
-        bellResetDebounce.restart()
+    function resetPreviewSfx(reason) {
+        console.log("[Main:SFX] resetPreviewSfx request reason=", reason,
+                    " status=", previewSfx.status, " playing=", previewSfx.playing,
+                    " src=", previewSfx.source)
+        previewResetDebounce.reason = reason
+        previewResetDebounce.restart()
     }
 
     // -------------------------
@@ -316,13 +370,12 @@ ApplicationWindow {
                         height: 80
                         onClicked: addNewAction()
 
-                        // Tooltip (Desktop Hover)
                         ToolTip.visible: hovered
                         ToolTip.text: "Neue Aktion"
 
                         contentItem: Text {
                             text: "+"
-                            color: "#ffffff"          // ✅ weiß
+                            color: "#ffffff"
                             font.pixelSize: 40
                             anchors.bottom: parent.bottom
                             anchors.bottomMargin: 10
@@ -344,7 +397,7 @@ ApplicationWindow {
     }
 
     // -------------------------
-    // Auto-scroll (ohne FAB-safe)
+    // Auto-scroll
     // -------------------------
     function ensureIndexVisible(idx) {
         if (idx < 0) return
@@ -414,7 +467,6 @@ ApplicationWindow {
         spacing: 12
         clip: true
 
-        // kleine Luft unten (optional)
         footerPositioning: ListView.InlineFooter
         footer: Item { width: 1; height: 12 }
 
@@ -438,7 +490,12 @@ ApplicationWindow {
                 sound: model.sound
                 soundDuration: model.soundDuration
                 soundEnabled: model.soundEnabled
-                onBellPreviewRequested: app.playBellPreview()
+
+                // NEW: Liste der Sounds für den Dialog
+                soundChoices: app.soundChoices
+
+                // NEW: Preview spielt gewählten Sound
+                onPreviewSoundRequested: function(name) { app.playSoundPreview(name) }
 
                 onToggleRequested: function(idx) {
                     app.expandedIndex = (app.expandedIndex === idx) ? -1 : idx

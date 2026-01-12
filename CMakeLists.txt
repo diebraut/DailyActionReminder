@@ -19,6 +19,7 @@ qt_add_qml_module(appDailyActionReminder
         QML_FILES ActionDelegate.qml
         RESOURCES
         SOURCES appstorage.h appstorage.cpp
+        RESOURCES sounds/airy_whoosh.wav sounds/beep_double.wav sounds/beep_short.wav sounds/low_gong.wav sounds/marimba_hit.wav sounds/pop_click.wav sounds/soft_chime.wav sounds/triangle_ping.wav sounds/wood_tap.wav
 )
 qt_add_resources(appDailyActionReminder
     "qml"
@@ -27,6 +28,16 @@ qt_add_resources(appDailyActionReminder
         Main.qml
         ActionDelegate.qml
         sounds/bell.wav
+        sounds/pop_click.wav
+        sounds/airy_whoosh.wav
+        sounds/beep_short.wav
+        sounds/beep_double.wav
+        sounds/low_gong.wav
+        sounds/marimba_hit.wav
+        sounds/pop_click.wav
+        sounds/soft_chime.wav
+        sounds/triangle_ping.wav
+        sounds/wood_tap.wav
 )
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.

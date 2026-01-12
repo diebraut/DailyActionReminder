@@ -29,6 +29,9 @@ Rectangle {
 
     property int delegateIndex: -1
 
+    // NEW: wird von Main übergeben
+    property var soundChoices: ["Bell"]
+
     // keep last valid non-empty name
     property string _lastNonEmptyActionText: ""
 
@@ -48,7 +51,9 @@ Rectangle {
     signal soundEdited(string v)
     signal soundDurationEdited(int v)
     signal soundEnabledEdited(bool v)
-    signal bellPreviewRequested()
+
+    // NEW: Preview mit Sound-Namen
+    signal previewSoundRequested(string soundName)
 
     function _setIfChangedString(propName, newValue, sig) {
         if (root[propName] !== newValue) {
@@ -81,13 +86,11 @@ Rectangle {
             if (endTime === undefined || endTime === null) {
                 _setIfChangedString("endTime", "", endTimeEdited)
             }
-            // ✅ Default Minuten (nicht 1800)
             if (intervalMinutes <= 0) {
                 _setIfChangedInt("intervalMinutes", 60, intervalMinutesEdited)
             }
         }
 
-        // ✅ Default Sound-Name
         if (!sound || sound.trim().length === 0) {
             _setIfChangedString("sound", "Bell", soundEdited)
         }
@@ -147,33 +150,198 @@ Rectangle {
         onAccepted: root.deleteRequested(root.delegateIndex)
     }
 
-    // ===== Dummy Sound Picker =====
+    // ===== Sound Picker (hell, Icon+Name, Preview mit echtem Sound, Übernehmen/Abbrechen) =====
+    // ===== Sound Picker (hell, sauber scrollbar, Footer immer sichtbar) =====
     Dialog {
         id: soundDialog
         modal: true
         title: "Ton wählen"
-        standardButtons: Dialog.Cancel
-        width: 320
+        standardButtons: Dialog.NoButton
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
 
-        contentItem: Item {
-            implicitWidth: soundDialog.width
-            implicitHeight: col.implicitHeight + 20
+        width: 380
+        height: Math.min(((root.Window.window ? root.Window.window.height : 720) * 0.85), 640)
+
+        // Overlay weniger dunkel
+        Overlay.modal: Rectangle { color: "#00000030" }
+
+        property var choices: (root.soundChoices && root.soundChoices.length > 0) ? root.soundChoices : ["Bell"]
+        property string pendingSound: root.soundDisplayName
+
+        onOpened: pendingSound = root.soundDisplayName
+
+        contentItem: Rectangle {
+            anchors.fill: parent
+            color: "#ffffff"
+            radius: 16
+            border.color: "#d0d0d0"
+            border.width: 1
 
             ColumnLayout {
-                id: col
+                id: dlgCol
                 anchors.fill: parent
-                anchors.margins: 10
-                spacing: 8
+                anchors.margins: 16
+                spacing: 12
 
-                Repeater {
-                    model: ["Bell", "Beep", "Chime"]
-                    delegate: Button {
-                        text: modelData
-                        Layout.fillWidth: true
-                        onClicked: {
-                            root.sound = modelData
-                            root.soundEdited(modelData)
-                            soundDialog.close()
+                Text {
+                    text: "Bitte Ton auswählen:"
+                    color: "#222222"
+                    font.pixelSize: 14
+                    font.bold: true
+                }
+
+                // ✅ Scrollbarer Bereich nimmt den verfügbaren Rest ein
+                ScrollView {
+                    id: soundsScroll
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+
+                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                    // ✅ keine “magic number” mehr
+                    contentWidth: listCol.width
+                    contentHeight: listCol.implicitHeight
+
+                    Column {
+                        id: listCol
+                        width: soundsScroll.availableWidth
+                        spacing: 10
+
+                        Repeater {
+                            model: soundDialog.choices
+
+                            delegate: Rectangle {
+                                width: listCol.width
+                                height: 44
+                                radius: 10
+                                border.color: "#b0b0b0"
+                                border.width: 1
+                                color: (modelData === soundDialog.pendingSound) ? "#cfcfcf" : "#f6f6f6"
+
+                                // ✅ Zeilenklick: nur auswählen (liegt "hinten")
+                                MouseArea {
+                                    anchors.fill: parent
+                                    z: 0
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: function(mouse) {
+                                        mouse.accepted = true
+                                        soundDialog.pendingSound = modelData
+                                        console.log("[SoundDialog] selected:", modelData)
+                                    }
+                                }
+
+                                // ✅ Inhalt liegt "vorn", damit Icon-MouseArea Klicks bekommt
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 8
+                                    spacing: 10
+                                    z: 1
+
+                                    // Preview-Icon
+                                    Rectangle {
+                                        width: 34
+                                        height: 34
+                                        radius: 10
+                                        color: "#ffffff"
+                                        border.color: "#cfcfcf"
+                                        Layout.alignment: Qt.AlignVCenter
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "🔊"
+                                            font.pixelSize: 20
+                                            color: "#222222"
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: function(mouse) {
+                                                mouse.accepted = true
+                                                console.log("[SoundDialog] preview:", modelData)
+                                                root.previewSoundRequested(modelData)   // ✅ spielt jetzt wirklich diesen Sound
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: modelData
+                                        color: "#000000"
+                                        font.pixelSize: 14
+                                        verticalAlignment: Text.AlignVCenter
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+
+                                    Rectangle {
+                                        width: 12
+                                        height: 12
+                                        radius: 6
+                                        border.color: "#777777"
+                                        color: (modelData === soundDialog.pendingSound) ? "#4CAF50" : "transparent"
+                                        Layout.alignment: Qt.AlignVCenter
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ✅ Footer bleibt immer sichtbar und wirkt luftiger
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignRight
+                    spacing: 10
+
+                    Rectangle {
+                        width: 90
+                        height: 32
+                        radius: 8
+                        color: "#d0d0d0"
+                        border.color: "#b0b0b0"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Abbrechen"
+                            color: "#000000"
+                            font.pixelSize: 13
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: function(mouse) {
+                                mouse.accepted = true
+                                soundDialog.close()
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        width: 90
+                        height: 32
+                        radius: 8
+                        color: "#d0d0d0"
+                        border.color: "#b0b0b0"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Übernehmen"
+                            color: "#000000"
+                            font.pixelSize: 13
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: function(mouse) {
+                                mouse.accepted = true
+                                root.sound = soundDialog.pendingSound
+                                root.soundEdited(soundDialog.pendingSound)
+                                soundDialog.close()
+                            }
                         }
                     }
                 }
@@ -446,8 +614,7 @@ Rectangle {
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: function(mouse) {
                                         mouse.accepted = true
-                                        console.log("[Delegate] sound icon clicked idx=", root.delegateIndex, "sound=", root.soundDisplayName)
-                                        root.bellPreviewRequested()
+                                        root.previewSoundRequested(root.soundDisplayName)
                                     }
                                 }
                             }
@@ -659,12 +826,10 @@ Rectangle {
                         // ---- SOUND ----
                         SectionHeader { title: "Ton" }
 
-                        // ✅ NEU: Icon + Name + Button "Ändern" (kein Eingabefeld)
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 10
 
-                            // Icon (≈ +50%) + klickbar
                             Item {
                                 implicitWidth: 30
                                 implicitHeight: 30
@@ -684,38 +849,33 @@ Rectangle {
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: function(mouse) {
                                         mouse.accepted = true
-                                        console.log("[Delegate] bell preview requested (edit) idx=", root.delegateIndex,
-                                                    " sound=", root.soundDisplayName,
-                                                    " enabled=", root.soundEnabled)
-                                        root.bellPreviewRequested()
+                                        root.previewSoundRequested(root.soundDisplayName)
                                     }
                                 }
                             }
 
-                            // Sound-Name -> schwarz
                             Text {
                                 text: root.soundDisplayName
                                 font.pixelSize: 14
-                                color: "#000000"          // ✅ schwarz
+                                color: "#000000"
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
                                 Layout.alignment: Qt.AlignVCenter
                                 verticalAlignment: Text.AlignVCenter
                             }
 
-                            // "Ändern" Button im Stil der Mode-Buttons (dunkelgrau)
                             Rectangle {
                                 width: 120
                                 height: 36
                                 radius: 8
-                                color: "#d0d0d0"        // ✅ dunkelgrau (helles Dunkelgrau)
-                                border.color: "#b0b0b0" // optional: Rahmen für mehr Kontrast
+                                color: "#d0d0d0"
+                                border.color: "#b0b0b0"
                                 Layout.alignment: Qt.AlignVCenter
 
                                 Text {
                                     anchors.centerIn: parent
                                     text: "Ändern"
-                                    color: "#000000"    // ✅ schwarz
+                                    color: "#000000"
                                     font.pixelSize: 14
                                 }
 
@@ -724,11 +884,12 @@ Rectangle {
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: function(mouse) {
                                         mouse.accepted = true
-                                        console.log("[Delegate] change sound clicked idx=", root.delegateIndex)
+                                        soundDialog.open()
                                     }
                                 }
                             }
                         }
+
                         InlineNumberField {
                             label: "Dauer (Sekunden)"
                             value: root.soundDuration
