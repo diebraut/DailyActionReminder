@@ -25,7 +25,6 @@ Rectangle {
     property int intervalMinutes
     property bool soundEnabled
     property string sound
-    property int soundDuration
 
     property int delegateIndex: -1
 
@@ -38,6 +37,8 @@ Rectangle {
     // Anzeige-Name: wenn leer -> Bell
     readonly property string soundDisplayName: (root.sound && root.sound.trim().length > 0) ? root.sound.trim() : "Bell"
 
+    property real volume: 1.0   // 0.0 .. 1.0 (pro Aktion)
+
     signal toggleRequested(int idx)
     signal deleteRequested(int idx)
 
@@ -49,8 +50,8 @@ Rectangle {
     signal endTimeEdited(string v)
     signal intervalMinutesEdited(int v)
     signal soundEdited(string v)
-    signal soundDurationEdited(int v)
     signal soundEnabledEdited(bool v)
+    signal volumeEdited(real v)
 
     // NEW: Preview mit Sound-Namen
     signal previewSoundRequested(string soundName)
@@ -95,9 +96,6 @@ Rectangle {
             _setIfChangedString("sound", "Bell", soundEdited)
         }
 
-        if (soundDuration === undefined || soundDuration === null) {
-            _setIfChangedInt("soundDuration", 0, soundDurationEdited)
-        }
         if (soundEnabled === undefined || soundEnabled === null) {
             root.soundEnabled = true
             soundEnabledEdited(true)
@@ -150,21 +148,35 @@ Rectangle {
         onAccepted: root.deleteRequested(root.delegateIndex)
     }
 
-    // ===== Sound Picker (hell, Icon+Name, Preview mit echtem Sound, Übernehmen/Abbrechen) =====
-    // ===== Sound Picker (hell, sauber scrollbar, Footer immer sichtbar) =====
     Dialog {
         id: soundDialog
         modal: true
-        title: "Ton wählen"
         standardButtons: Dialog.NoButton
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
 
-        width: 380
-        height: Math.min(((root.Window.window ? root.Window.window.height : 720) * 0.85), 640)
+        // Nur über Buttons schließen (wie gewünscht)
+        closePolicy: Popup.NoAutoClose
 
-        // Overlay weniger dunkel
+        // ✅ Wichtig: nicht im Delegate/ListView bleiben (sonst clip!)
+        parent: (root.Window.window && root.Window.window.overlay)
+                ? root.Window.window.overlay
+                : (root.Window.window ? root.Window.window.contentItem : root)
+
+        // Größe am Window orientieren
+        width: Math.min(parent ? parent.width * 0.92 : 380, 420)
+        height: Math.min(parent ? parent.height * 0.85 : 620, 620)
+
+        // zentrieren
+        x: parent ? Math.round((parent.width - width) / 2) : 0
+        y: parent ? Math.round((parent.height - height) / 2) : 0
+
+        // Overlay hell
         Overlay.modal: Rectangle { color: "#00000030" }
 
+        // Erwartet:
+        //   root.soundChoices : var (Liste von Namen)
+        //   root.soundDisplayName : string (aktueller Name)
+        //   root.previewSoundRequested(name)
+        //   root.soundEdited(name)
         property var choices: (root.soundChoices && root.soundChoices.length > 0) ? root.soundChoices : ["Bell"]
         property string pendingSound: root.soundDisplayName
 
@@ -177,170 +189,180 @@ Rectangle {
             border.color: "#d0d0d0"
             border.width: 1
 
-            ColumnLayout {
-                id: dlgCol
+            Item {
+                id: body
                 anchors.fill: parent
                 anchors.margins: 16
-                spacing: 12
 
+                // Header
                 Text {
-                    text: "Bitte Ton auswählen:"
+                    id: dlgTitle
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    text: "Ton wählen"
                     color: "#222222"
-                    font.pixelSize: 14
+                    font.pixelSize: 16
                     font.bold: true
                 }
 
-                // ✅ Scrollbarer Bereich nimmt den verfügbaren Rest ein
-                ScrollView {
-                    id: soundsScroll
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: dlgTitle.bottom
+                    anchors.topMargin: 10
+                    height: 1
+                    color: "#e6e6e6"
+                }
 
-                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
-                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                // Footer (immer sichtbar)
+                Item {
+                    id: footer
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 36
 
-                    // ✅ keine “magic number” mehr
-                    contentWidth: listCol.width
-                    contentHeight: listCol.implicitHeight
-
-                    Column {
-                        id: listCol
-                        width: soundsScroll.availableWidth
+                    Row {
                         spacing: 10
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
 
-                        Repeater {
-                            model: soundDialog.choices
+                        // Abbrechen (klein, rechts unten)
+                        Rectangle {
+                            width: 95
+                            height: 32
+                            radius: 8
+                            color: "#d0d0d0"
+                            border.color: "#b0b0b0"
 
-                            delegate: Rectangle {
-                                width: listCol.width
-                                height: 44
-                                radius: 10
-                                border.color: "#b0b0b0"
-                                border.width: 1
-                                color: (modelData === soundDialog.pendingSound) ? "#cfcfcf" : "#f6f6f6"
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Abbrechen"
+                                color: "#000000"
+                                font.pixelSize: 13
+                            }
 
-                                // ✅ Zeilenklick: nur auswählen (liegt "hinten")
-                                MouseArea {
-                                    anchors.fill: parent
-                                    z: 0
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: function(mouse) {
-                                        mouse.accepted = true
-                                        soundDialog.pendingSound = modelData
-                                        console.log("[SoundDialog] selected:", modelData)
-                                    }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: function(mouse) {
+                                    mouse.accepted = true
+                                    soundDialog.close()
                                 }
+                            }
+                        }
 
-                                // ✅ Inhalt liegt "vorn", damit Icon-MouseArea Klicks bekommt
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 8
-                                    spacing: 10
-                                    z: 1
+                        // Übernehmen (klein, rechts neben Abbrechen)
+                        Rectangle {
+                            width: 110
+                            height: 32
+                            radius: 8
+                            color: "#d0d0d0"
+                            border.color: "#b0b0b0"
 
-                                    // Preview-Icon
-                                    Rectangle {
-                                        width: 34
-                                        height: 34
-                                        radius: 10
-                                        color: "#ffffff"
-                                        border.color: "#cfcfcf"
-                                        Layout.alignment: Qt.AlignVCenter
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Übernehmen"
+                                color: "#000000"
+                                font.pixelSize: 13
+                            }
 
-                                        Text {
-                                            anchors.centerIn: parent
-                                            text: "🔊"
-                                            font.pixelSize: 20
-                                            color: "#222222"
-                                        }
-
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            cursorShape: Qt.PointingHandCursor
-                                            onClicked: function(mouse) {
-                                                mouse.accepted = true
-                                                console.log("[SoundDialog] preview:", modelData)
-                                                root.previewSoundRequested(modelData)   // ✅ spielt jetzt wirklich diesen Sound
-                                            }
-                                        }
-                                    }
-
-                                    Text {
-                                        text: modelData
-                                        color: "#000000"
-                                        font.pixelSize: 14
-                                        verticalAlignment: Text.AlignVCenter
-                                        elide: Text.ElideRight
-                                        Layout.fillWidth: true
-                                    }
-
-                                    Rectangle {
-                                        width: 12
-                                        height: 12
-                                        radius: 6
-                                        border.color: "#777777"
-                                        color: (modelData === soundDialog.pendingSound) ? "#4CAF50" : "transparent"
-                                        Layout.alignment: Qt.AlignVCenter
-                                    }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: function(mouse) {
+                                    mouse.accepted = true
+                                    root.soundEdited(soundDialog.pendingSound)
+                                    soundDialog.close()
                                 }
                             }
                         }
                     }
                 }
 
-                // ✅ Footer bleibt immer sichtbar und wirkt luftiger
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.alignment: Qt.AlignRight
-                    spacing: 10
+                // Liste zwischen Header und Footer eingeklemmt (scrollt)
+                ListView {
+                    id: soundList
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: dlgTitle.bottom
+                    anchors.topMargin: 22
+                    anchors.bottom: footer.top
+                    anchors.bottomMargin: 12
+                    clip: true
 
-                    Rectangle {
-                        width: 90
-                        height: 32
-                        radius: 8
-                        color: "#d0d0d0"
+                    model: soundDialog.choices
+
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                    delegate: Rectangle {
+                        width: soundList.width
+                        height: 44
+                        radius: 10
                         border.color: "#b0b0b0"
+                        border.width: 1
+                        color: (modelData === soundDialog.pendingSound) ? "#cfcfcf" : "#f6f6f6"
 
-                        Text {
-                            anchors.centerIn: parent
-                            text: "Abbrechen"
-                            color: "#000000"
-                            font.pixelSize: 13
-                        }
-
+                        // Zeilenklick: auswählen, Dialog bleibt offen (hinten)
                         MouseArea {
                             anchors.fill: parent
+                            z: 0
                             cursorShape: Qt.PointingHandCursor
                             onClicked: function(mouse) {
                                 mouse.accepted = true
-                                soundDialog.close()
+                                soundDialog.pendingSound = modelData
                             }
                         }
-                    }
 
-                    Rectangle {
-                        width: 90
-                        height: 32
-                        radius: 8
-                        color: "#d0d0d0"
-                        border.color: "#b0b0b0"
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: "Übernehmen"
-                            color: "#000000"
-                            font.pixelSize: 13
-                        }
-
-                        MouseArea {
+                        RowLayout {
                             anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: function(mouse) {
-                                mouse.accepted = true
-                                root.sound = soundDialog.pendingSound
-                                root.soundEdited(soundDialog.pendingSound)
-                                soundDialog.close()
+                            anchors.margins: 8
+                            spacing: 10
+                            z: 1
+
+                            // Preview Icon (klickbar)
+                            Rectangle {
+                                width: 34
+                                height: 34
+                                radius: 10
+                                color: "#ffffff"
+                                border.color: "#cfcfcf"
+                                Layout.alignment: Qt.AlignVCenter
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "🔊"
+                                    font.pixelSize: 20
+                                    color: "#222222"
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: function(mouse) {
+                                        mouse.accepted = true
+                                        root.previewSoundRequested(modelData)
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: modelData
+                                color: "#000000"
+                                font.pixelSize: 14
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            Rectangle {
+                                width: 12
+                                height: 12
+                                radius: 6
+                                border.color: "#777777"
+                                color: (modelData === soundDialog.pendingSound) ? "#4CAF50" : "transparent"
+                                Layout.alignment: Qt.AlignVCenter
                             }
                         }
                     }
@@ -528,7 +550,6 @@ Rectangle {
             width: parent.width
             spacing: 12
 
-            // ============== HEADER PANEL ==============
             Rectangle {
                 id: headerPanel
                 radius: 12
@@ -537,14 +558,23 @@ Rectangle {
                 Layout.fillWidth: true
                 implicitHeight: headerGrid.implicitHeight + 20
 
+                // speichert Volume nicht bei jedem Pixel Drag
+                Timer {
+                    id: volDebounce
+                    interval: 200
+                    repeat: false
+                    onTriggered: root.volumeEdited(root.volume)
+                }
+
                 GridLayout {
                     id: headerGrid
                     anchors.fill: parent
                     anchors.margins: 10
                     columns: 2
-                    columnSpacing: 8
+                    columnSpacing: 10
                     rowSpacing: 6
 
+                    // ---------- LEFT: Titel + Kurzinfo (klickbar zum Auf/Zu) ----------
                     Item {
                         Layout.fillWidth: true
                         implicitHeight: headerText.implicitHeight
@@ -555,6 +585,10 @@ Rectangle {
                             spacing: 4
 
                             Text {
+                                id: actionTextID
+                                padding: 0
+                                topPadding: 0
+                                bottomPadding: 55   // zieht optisch nach oben (klein halten)
                                 text: root.actionText
                                 font.pixelSize: 18
                                 font.bold: true
@@ -563,20 +597,22 @@ Rectangle {
                             }
 
                             RowLayout {
-                                visible: root.mode === "fixed"
-                                spacing: 6
-                                Layout.fillWidth: true
-                                Text { text: "Feste Uhrzeit:"; font.pixelSize: 13; color: "#555555" }
-                                Text { text: root.fixedTimeText() + " Uhr"; font.pixelSize: 13; color: "#444444"; elide: Text.ElideRight }
-                                Item { Layout.fillWidth: true }
-                            }
-
-                            RowLayout {
                                 visible: root.mode === "interval"
                                 spacing: 6
                                 Layout.fillWidth: true
+                                Layout.topMargin: -55     // <-- schiebt die Zeile nach unten
+
                                 Text { text: "Intervall:"; font.pixelSize: 13; color: "#555555" }
                                 Text { text: root.intervalMinutesText(); font.pixelSize: 13; color: "#444444" }
+                                Item { Layout.fillWidth: true }
+                            }
+                            RowLayout {
+                                visible: root.mode === "fixed"
+                                spacing: 6
+                                Layout.topMargin: -55     // <-- schiebt die Zeile nach unten
+                                Layout.fillWidth: true
+                                Text { text: "Feste Uhrzeit:"; font.pixelSize: 13; color: "#555555" }
+                                Text { text: root.fixedTimeText() + " Uhr"; font.pixelSize: 13; color: "#444444"; elide: Text.ElideRight }
                                 Item { Layout.fillWidth: true }
                             }
                         }
@@ -591,40 +627,18 @@ Rectangle {
                         }
                     }
 
-                    // Right side: Ton + dezent X darunter
+                    // ---------- RIGHT: Lautstärke-Slider + X (kompakter) ----------
                     ColumnLayout {
                         spacing: 8
                         Layout.alignment: Qt.AlignTop | Qt.AlignRight
+                        Layout.preferredWidth: Math.round(headerPanel.width * 0.40)   // ca. 40%
 
-                        RowLayout {
-                            spacing: 6
-                            Layout.alignment: Qt.AlignRight
-
-                            Text { text: "Ton"; font.pixelSize: 13; color: "#555555"; verticalAlignment: Text.AlignVCenter }
-
-                            Rectangle {
-                                width: 14
-                                height: 14
-                                radius: 7
-                                color: root.soundEnabled ? "#4CAF50" : "#cccccc"
-                                border.color: "#9a9a9a"
-
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: function(mouse) {
-                                        mouse.accepted = true
-                                        root.previewSoundRequested(root.soundDisplayName)
-                                    }
-                                }
-                            }
-                        }
-
+                        // ✅ 1) X oben rechts (50% größer)
                         Rectangle {
                             id: deleteChip
-                            width: 28
-                            height: 22
-                            radius: 7
+                            width: 36           // war ~24 -> +50%
+                            height: 30          // war ~20 -> +50%
+                            radius: 9
                             color: deleteMA.pressed ? "#e0e0e0" : "#f2f2f2"
                             border.color: "#cfcfcf"
                             Layout.alignment: Qt.AlignRight
@@ -632,7 +646,7 @@ Rectangle {
                             Text {
                                 anchors.centerIn: parent
                                 text: "X"
-                                font.pixelSize: 12
+                                font.pixelSize: 16   // war ~11 -> +45%
                                 font.bold: true
                                 color: "#666666"
                             }
@@ -644,6 +658,70 @@ Rectangle {
                                 onClicked: function(mouse) {
                                     mouse.accepted = true
                                     deleteDialog.open()
+                                }
+                            }
+                        }
+
+                        // ✅ 2) Slider/Icon unten rechts
+                        RowLayout {
+                            spacing: 6
+                            Layout.alignment: Qt.AlignRight
+                            opacity: root.soundEnabled ? 1.0 : 0.45
+
+                            Rectangle {
+                                width: 22
+                                height: 22
+                                radius: 7
+                                color: root.soundEnabled ? "#e8f4ff" : "#f0f0f0"
+                                border.color: root.soundEnabled ? "#2f6fb3" : "#9a9a9a"
+                                border.width: 1
+                                Layout.alignment: Qt.AlignVCenter
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: root.soundEnabled ? "🔊" : "🔇"
+                                    font.pixelSize: 14
+                                    color: root.soundEnabled ? "#0b4a8b" : "#444444"
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: function(mouse) {
+                                        mouse.accepted = true
+                                        const v = !root.soundEnabled
+                                        root.soundEnabled = v
+                                        root.soundEnabledEdited(v)
+                                        // ✅ nur wenn aktiviert -> abspielen
+                                        if (v) {
+                                            root.previewSoundRequested(root.soundDisplayName)
+                                        }
+                                    }
+                                }
+                            }
+
+                            Slider {
+                                id: volSliderHeader
+                                from: 0.0
+                                to: 1.0
+                                stepSize: 0.05
+                                value: root.volume
+                                enabled: root.soundEnabled
+                                Layout.preferredWidth: Math.max(110, Math.round(headerPanel.width * 0.26))
+                                Layout.alignment: Qt.AlignVCenter
+
+                                onMoved: {
+                                    root.volume = value
+                                    volDebounce.restart()
+                                }
+
+                                onPressedChanged: {
+                                    if (!pressed) {
+                                        root.volumeEdited(root.volume)
+                                        if (root.soundEnabled) {
+                                            root.previewSoundRequested(root.soundDisplayName)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -887,19 +965,6 @@ Rectangle {
                                         soundDialog.open()
                                     }
                                 }
-                            }
-                        }
-
-                        InlineNumberField {
-                            label: "Dauer (Sekunden)"
-                            value: root.soundDuration
-                            minValue: 0
-                            maxValue: 120
-                            minInputWidth: 170
-                            preferredInputWidth: 220
-                            onValueEdited: function(v) {
-                                root.soundDuration = v
-                                root.soundDurationEdited(v)
                             }
                         }
                     }

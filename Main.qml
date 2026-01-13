@@ -98,8 +98,8 @@ ApplicationWindow {
                 endTime: (o.endTime ?? ""),
                 intervalMinutes: intervalMinutes,
                 sound: (o.sound ?? "Bell"),
-                soundDuration: (o.soundDuration ?? 0),
-                soundEnabled: (o.soundEnabled ?? true)
+                soundEnabled: (o.soundEnabled ?? true),
+                volume: (typeof o.volume === "number") ? o.volume : 1.0,
             })
         }
         return JSON.stringify(arr)
@@ -131,8 +131,8 @@ ApplicationWindow {
                     endTime: (typeof o.endTime === "string") ? o.endTime : "",
                     intervalMinutes: intervalMinutes,
                     sound: (typeof o.sound === "string" && o.sound.trim().length > 0) ? o.sound : "Bell",
-                    soundDuration: (typeof o.soundDuration === "number") ? o.soundDuration : parseInt(o.soundDuration || 0),
-                    soundEnabled: (typeof o.soundEnabled === "boolean") ? o.soundEnabled : true
+                    soundEnabled: (typeof o.soundEnabled === "boolean") ? o.soundEnabled : true,
+                    volume: (typeof o.volume === "number") ? o.volume : parseFloat(o.volume || 1.0),
                 })
             }
             return true
@@ -152,8 +152,8 @@ ApplicationWindow {
             "endTime": "",
             "intervalMinutes": 60,
             "sound": "Bell",
-            "soundDuration": 5,
-            "soundEnabled": true
+            "soundEnabled": true,
+            "volume": 1.0,
         })
         actionModel.append({
             "text": "Trinken",
@@ -163,8 +163,8 @@ ApplicationWindow {
             "endTime": "18:00",
             "intervalMinutes": 60,
             "sound": "Bell",
-            "soundDuration": 3,
-            "soundEnabled": true
+            "soundEnabled": true,
+            "volume": 1.0,
         })
     }
 
@@ -195,7 +195,6 @@ ApplicationWindow {
             "endTime": "",
             "intervalMinutes": 60,
             "sound": "Bell",
-            "soundDuration": 0,
             "soundEnabled": true
         })
 
@@ -232,13 +231,13 @@ ApplicationWindow {
     // Preview SoundEffect (dynamisch per source)
     // -------------------------
     property string desiredPreviewSource: "qrc:/sounds/bell.wav"
+    property real desiredPreviewVolume: 1.0
 
     SoundEffect {
         id: previewSfx
         source: app.desiredPreviewSource
-        volume: 1.0
+        volume: app.desiredPreviewVolume
         muted: false
-
         onStatusChanged: {
             if (status === SoundEffect.Error) {
                 app.resetPreviewSfx("SoundEffect.Error")
@@ -246,15 +245,19 @@ ApplicationWindow {
         }
     }
 
-    function playSoundPreview(soundName) {
+    function playSoundPreview(soundName, vol) {
         const src = soundSourceForName(soundName)
         desiredPreviewSource = src
 
+        // pro Aktion
+        if (typeof vol === "number" && !isNaN(vol)) {
+            desiredPreviewVolume = 2.0 * Math.max(0.0, Math.min(1.0, vol))
+        } else {
+            desiredPreviewVolume = 1.0
+        }
+
         if (previewSfx.source !== src)
             previewSfx.source = src
-
-        // (deine Logs kannst du bei Bedarf wieder anmachen)
-        // console.log("[Main] playSoundPreview name=", soundName, "src=", src, "status=", previewSfx.status)
 
         if (previewSfx.status === SoundEffect.Error) {
             resetPreviewSfx("playSoundPreview saw Error")
@@ -488,14 +491,15 @@ ApplicationWindow {
                 endTime: model.endTime
                 intervalMinutes: model.intervalMinutes
                 sound: model.sound
-                soundDuration: model.soundDuration
                 soundEnabled: model.soundEnabled
+                volume: model.volume
+                onVolumeEdited: function(v) { app.setRole(index, "volume", v) }
 
                 // NEW: Liste der Sounds für den Dialog
                 soundChoices: app.soundChoices
 
                 // NEW: Preview spielt gewählten Sound
-                onPreviewSoundRequested: function(name) { app.playSoundPreview(name) }
+                onPreviewSoundRequested: function(name) { app.playSoundPreview(name, delegateRoot.volume) }
 
                 onToggleRequested: function(idx) {
                     app.expandedIndex = (app.expandedIndex === idx) ? -1 : idx
@@ -510,7 +514,6 @@ ApplicationWindow {
                 onEndTimeEdited: function(v) { app.setRole(index, "endTime", v) }
                 onIntervalMinutesEdited: function(v) { app.setRole(index, "intervalMinutes", v) }
                 onSoundEdited: function(v) { app.setRole(index, "sound", v) }
-                onSoundDurationEdited: function(v) { app.setRole(index, "soundDuration", v) }
                 onSoundEnabledEdited: function(v) { app.setRole(index, "soundEnabled", v) }
 
                 onDeleteRequested: function(idx) {
