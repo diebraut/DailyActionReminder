@@ -3,7 +3,6 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtMultimedia
 
-
 ApplicationWindow {
     id: app
     width: 390
@@ -24,28 +23,17 @@ ApplicationWindow {
     // -------------------------
     // Sound mapping (Name -> qrc:/sounds/...)
     // -------------------------
-    // ⚠️ Dateinamen müssen so in deiner .qrc liegen:
-    // qrc:/sounds/bell.wav
-    // qrc:/sounds/soft_chime.wav
-    // qrc:/sounds/beep_short.wav
-    // qrc:/sounds/beep_double.wav
-    // qrc:/sounds/pop_click.wav
-    // qrc:/sounds/wood_tap.wav
-    // qrc:/sounds/marimba_hit.wav
-    // qrc:/sounds/triangle_ping.wav
-    // qrc:/sounds/low_gong.wav
-    // qrc:/sounds/airy_whoosh.wav
     property var soundMap: ({
-        "Bell":         "qrc:/sounds/bell.wav",
-        "Soft Chime":   "qrc:/sounds/soft_chime.wav",
-        "Beep Short":   "qrc:/sounds/beep_short.wav",
-        "Beep Double":  "qrc:/sounds/beep_double.wav",
-        "Pop Click":    "qrc:/sounds/pop_click.wav",
-        "Wood Tap":     "qrc:/sounds/wood_tap.wav",
-        "Marimba Hit":  "qrc:/sounds/marimba_hit.wav",
-        "Triangle Ping":"qrc:/sounds/triangle_ping.wav",
-        "Low Gong":     "qrc:/sounds/low_gong.wav",
-        "Airy Whoosh":  "qrc:/sounds/airy_whoosh.wav"
+        "Bell":          "qrc:/sounds/bell.wav",
+        "Soft Chime":    "qrc:/sounds/soft_chime.wav",
+        "Beep Short":    "qrc:/sounds/beep_short.wav",
+        "Beep Double":   "qrc:/sounds/beep_double.wav",
+        "Pop Click":     "qrc:/sounds/pop_click.wav",
+        "Wood Tap":      "qrc:/sounds/wood_tap.wav",
+        "Marimba Hit":   "qrc:/sounds/marimba_hit.wav",
+        "Triangle Ping": "qrc:/sounds/triangle_ping.wav",
+        "Low Gong":      "qrc:/sounds/low_gong.wav",
+        "Airy Whoosh":   "qrc:/sounds/airy_whoosh.wav"
     })
 
     property var soundChoices: [
@@ -61,28 +49,31 @@ ApplicationWindow {
         "Airy Whoosh"
     ]
 
+    // -------------------------
+    // State (actionsRunning NICHT persistieren)
+    // -------------------------
+    property bool actionsRunning: false
+    property bool allSoundsDisabled: false   // legacy (persistiert), aktuell nicht im UI benutzt
+    property int expandedIndex: -1
+
+    ListModel { id: actionModel }
+
+    // -------------------------
+    // Helpers
+    // -------------------------
     function soundSourceForName(name) {
         const key = (typeof name === "string" && name.trim().length > 0) ? name.trim() : "Bell"
         return soundMap[key] || soundMap["Bell"]
     }
 
     // -------------------------
-    // State
-    // -------------------------
-    property bool allSoundsDisabled: false
-    property int expandedIndex: -1
-
-    ListModel { id: actionModel }
-
-    // -------------------------
-    // Persistence helpers
+    // Persistence
     // -------------------------
     function serializeModel() {
         const arr = []
         for (let i = 0; i < actionModel.count; i++) {
             const o = actionModel.get(i)
 
-            // ✅ intervalMinutes bleibt Minuten (Backwards: intervalSeconds -> Minuten)
             let intervalMinutes = o.intervalMinutes
             if ((intervalMinutes === undefined || intervalMinutes === null) && o.intervalSeconds !== undefined) {
                 intervalMinutes = Math.round(parseInt(o.intervalSeconds) / 60)
@@ -99,7 +90,7 @@ ApplicationWindow {
                 intervalMinutes: intervalMinutes,
                 sound: (o.sound ?? "Bell"),
                 soundEnabled: (o.soundEnabled ?? true),
-                volume: (typeof o.volume === "number") ? o.volume : 1.0,
+                volume: (typeof o.volume === "number") ? o.volume : 1.0
             })
         }
         return JSON.stringify(arr)
@@ -115,7 +106,6 @@ ApplicationWindow {
             for (let i = 0; i < arr.length; i++) {
                 const o = arr[i] || {}
 
-                // ✅ intervalMinutes bleibt Minuten (Backwards: intervalSeconds -> Minuten)
                 let intervalMinutes = o.intervalMinutes
                 if ((intervalMinutes === undefined || intervalMinutes === null) && o.intervalSeconds !== undefined) {
                     intervalMinutes = Math.round(parseInt(o.intervalSeconds) / 60)
@@ -132,7 +122,7 @@ ApplicationWindow {
                     intervalMinutes: intervalMinutes,
                     sound: (typeof o.sound === "string" && o.sound.trim().length > 0) ? o.sound : "Bell",
                     soundEnabled: (typeof o.soundEnabled === "boolean") ? o.soundEnabled : true,
-                    volume: (typeof o.volume === "number") ? o.volume : parseFloat(o.volume || 1.0),
+                    volume: (typeof o.volume === "number") ? o.volume : parseFloat(o.volume || 1.0)
                 })
             }
             return true
@@ -153,7 +143,7 @@ ApplicationWindow {
             "intervalMinutes": 60,
             "sound": "Bell",
             "soundEnabled": true,
-            "volume": 1.0,
+            "volume": 1.0
         })
         actionModel.append({
             "text": "Trinken",
@@ -164,13 +154,12 @@ ApplicationWindow {
             "intervalMinutes": 60,
             "sound": "Bell",
             "soundEnabled": true,
-            "volume": 1.0,
+            "volume": 1.0
         })
     }
 
     function saveNow() {
         Storage.saveState(app.allSoundsDisabled, serializeModel())
-        dbg("[Main] saveNow() allSoundsDisabled=", app.allSoundsDisabled, "count=", actionModel.count)
     }
 
     function setRole(idx, role, value) {
@@ -179,13 +168,17 @@ ApplicationWindow {
         actionModel.setProperty(idx, role, value)
         saveNow()
 
-        // ✅ wenn gerade diese Einheit offen ist, nachscrollen
+        // wenn gerade diese Einheit offen ist, nachscrollen
         if (app.expandedIndex === idx) {
             ensureVisibleTimer.kick(idx)
         }
+
+        // wenn Aktionen laufen und Intervall-Parameter geändert werden -> neu planen
+        if (actionsRunning && (role === "mode" || role === "startTime" || role === "endTime" || role === "intervalMinutes")) {
+            scheduleIntervalForIndex(idx, Date.now())
+        }
     }
 
-    // ✅ exakt die alte "+" Funktionalität
     function addNewAction() {
         actionModel.append({
             "text": "Neue Aktion",
@@ -195,12 +188,18 @@ ApplicationWindow {
             "endTime": "",
             "intervalMinutes": 60,
             "sound": "Bell",
-            "soundEnabled": true
+            "soundEnabled": true,
+            "volume": 0.5
         })
 
-        app.expandedIndex = actionModel.count - 1
-        ensureVisibleTimer.kick(app.expandedIndex)
+        const idx = actionModel.count - 1
+        app.expandedIndex = idx
+        ensureVisibleTimer.kick(idx)
         saveNow()
+
+        if (actionsRunning) {
+            scheduleIntervalForIndex(idx, Date.now())
+        }
     }
 
     Component.onCompleted: {
@@ -217,18 +216,20 @@ ApplicationWindow {
             loadDefaults()
             saveNow()
         }
-        dbg("[Main] after load: count=", actionModel.count,
-            " first.soundEnabled=",
-            (actionModel.count > 0 ? actionModel.get(0).soundEnabled : "n/a"))
+
+        // Aktionen NICHT automatisch starten
+        actionsRunning = false
+        stopActions()
     }
 
     onClosing: function(close) {
+        stopActions()
         previewSfx.stop()
         saveNow()
     }
 
     // -------------------------
-    // Preview SoundEffect (dynamisch per source)
+    // Preview SoundEffect (zentraler Player)
     // -------------------------
     property string desiredPreviewSource: "qrc:/sounds/bell.wav"
     property real desiredPreviewVolume: 1.0
@@ -238,6 +239,7 @@ ApplicationWindow {
         source: app.desiredPreviewSource
         volume: app.desiredPreviewVolume
         muted: false
+
         onStatusChanged: {
             if (status === SoundEffect.Error) {
                 app.resetPreviewSfx("SoundEffect.Error")
@@ -245,37 +247,16 @@ ApplicationWindow {
         }
     }
 
-    function playSoundPreview(soundName, vol) {
-        const src = soundSourceForName(soundName)
-        desiredPreviewSource = src
-
-        // pro Aktion
-        if (typeof vol === "number" && !isNaN(vol)) {
-            desiredPreviewVolume = 2.0 * Math.max(0.0, Math.min(1.0, vol))
-        } else {
-            desiredPreviewVolume = 1.0
-        }
-
-        if (previewSfx.source !== src)
-            previewSfx.source = src
-
-        if (previewSfx.status === SoundEffect.Error) {
-            resetPreviewSfx("playSoundPreview saw Error")
-            Qt.callLater(function() { previewSfx.stop(); previewSfx.play() })
-            return
-        }
-
-        previewSfx.stop()
-        previewSfx.play()
-    }
-
-    // backward-compat (falls du irgendwo noch Bell direkt callst)
-    function playBellPreview() { playSoundPreview("Bell") }
-
     MediaDevices {
         id: mediaDevices
-        onDefaultAudioOutputChanged: app.resetPreviewSfx("defaultAudioOutputChanged")
-        onAudioOutputsChanged: app.resetPreviewSfx("audioOutputsChanged")
+        onDefaultAudioOutputChanged: {
+            if (previewSfx.playing || app._soundQueue.length > 0)
+                app.resetPreviewSfx("defaultAudioOutputChanged")
+        }
+        onAudioOutputsChanged: {
+            if (previewSfx.playing || app._soundQueue.length > 0)
+                app.resetPreviewSfx("audioOutputsChanged")
+        }
     }
 
     Timer {
@@ -300,8 +281,257 @@ ApplicationWindow {
         previewResetDebounce.restart()
     }
 
+    // =========================================================
+    // Sound Queue: entzerrt gleichzeitige Trigger (>= 500ms Abstand)
+    // =========================================================
+    property var _soundQueue: []          // [{name, src, vol}]
+    property int _minSoundGapMs: 500
+    property int _lastSoundStartMs: 0
+
+    Timer {
+        id: soundQueuePump
+        interval: 50
+        repeat: true
+        running: true
+        onTriggered: app._pumpSoundQueue()
+    }
+
+    function enqueueSound(soundName, vol01, priority) {
+        const name = (typeof soundName === "string" && soundName.trim().length > 0) ? soundName.trim() : "Bell"
+        const src = soundSourceForName(name)
+        const v = (typeof vol01 === "number" && !isNaN(vol01)) ? Math.max(0.0, Math.min(1.0, vol01)) : 1.0
+        const it = { name: name, src: src, vol: v }
+
+        if (priority)
+            _soundQueue.unshift(it)
+        else
+            _soundQueue.push(it)
+    }
+
+    function playSoundPreview(soundName, vol) {
+        // Preview priorisiert, wird aber trotzdem seriell abgespielt
+        enqueueSound(soundName, vol, true)
+    }
+
+    function _pumpSoundQueue() {
+        if (_soundQueue.length === 0) return
+        if (previewSfx.playing) return
+
+        const now = Date.now()
+        if ((now - _lastSoundStartMs) < _minSoundGapMs) return
+
+        const it = _soundQueue.shift()
+
+        desiredPreviewSource = it.src
+        desiredPreviewVolume = it.vol
+
+        if (previewSfx.source !== it.src)
+            previewSfx.source = it.src
+
+        if (previewSfx.status === SoundEffect.Error) {
+            // Re-queue vorne und resetten
+            _soundQueue.unshift(it)
+            resetPreviewSfx("pump saw Error")
+            _lastSoundStartMs = now
+            return
+        }
+
+        _lastSoundStartMs = now
+        previewSfx.stop()
+        previewSfx.play()
+    }
+
+    // =========================================================
+    // Scheduler: Intervall (Minuten)
+    // Runtime roles im Model:
+    //   nextFireMs, lastFiredMs, nextInMinutes
+    // =========================================================
+    Timer {
+        id: intervalScheduler
+        interval: 1000
+        repeat: true
+        running: app.actionsRunning
+        triggeredOnStart: true
+        onTriggered: app.schedulerStep()
+    }
+
+    function startActions() {
+        dbg("[Main] startActions()")
+        actionsRunning = true
+        schedulerInit()
+        intervalScheduler.restart()
+    }
+
+    function stopActions() {
+        dbg("[Main] stopActions()")
+        actionsRunning = false
+        intervalScheduler.stop()
+
+        // runtime anzeigen reset
+        for (let i = 0; i < actionModel.count; i++) {
+            actionModel.setProperty(i, "nextInMinutes", -1)
+            actionModel.setProperty(i, "nextFireMs", 0)
+            actionModel.setProperty(i, "lastFiredMs", 0)
+        }
+    }
+
+    function schedulerInit() {
+        const nowMs = Date.now()
+        for (let i = 0; i < actionModel.count; i++) {
+            scheduleIntervalForIndex(i, nowMs)
+        }
+        schedulerStep()
+    }
+
+    function schedulerStep() {
+        if (!actionsRunning) return
+
+        const nowMs = Date.now()
+
+        for (let i = 0; i < actionModel.count; i++) {
+            const o = actionModel.get(i)
+            if ((o.mode || "fixed") !== "interval") {
+                actionModel.setProperty(i, "nextInMinutes", -1)
+                actionModel.setProperty(i, "nextFireMs", 0)
+                actionModel.setProperty(i, "lastFiredMs", 0)
+                continue
+            }
+
+            const intervalMinutes = parseInt(o.intervalMinutes || 0)
+            if (!intervalMinutes || intervalMinutes <= 0) {
+                actionModel.setProperty(i, "nextInMinutes", -1)
+                actionModel.setProperty(i, "nextFireMs", 0)
+                continue
+            }
+
+            let nextMs = parseInt(o.nextFireMs || 0)
+            if (!nextMs || isNaN(nextMs)) {
+                nextMs = computeNextIntervalFireMs(nowMs, o.startTime || "", o.endTime || "", intervalMinutes)
+                actionModel.setProperty(i, "nextFireMs", nextMs)
+            }
+
+            const minsLeft = Math.max(0, Math.ceil((nextMs - nowMs) / 60000.0))
+            actionModel.setProperty(i, "nextInMinutes", minsLeft)
+
+            const lastFired = parseInt(o.lastFiredMs || 0)
+            if (nowMs >= nextMs && lastFired !== nextMs) {
+                actionModel.setProperty(i, "lastFiredMs", nextMs)
+
+                // Sound-Trigger (seriell, min 0.5s Abstand)
+                if (o.soundEnabled) {
+                    enqueueSound(o.sound || "Bell",
+                                (typeof o.volume === "number") ? o.volume : 1.0,
+                                false)
+                }
+
+                const next2 = computeNextIntervalFireMs(nowMs + 1000, o.startTime || "", o.endTime || "", intervalMinutes)
+                actionModel.setProperty(i, "nextFireMs", next2)
+
+                const mins2 = Math.max(0, Math.ceil((next2 - (nowMs + 1000)) / 60000.0))
+                actionModel.setProperty(i, "nextInMinutes", mins2)
+            }
+        }
+    }
+
+    function parseHHMMToMinutes(t) {
+        if (typeof t !== "string") return 0
+        const s = t.trim()
+        if (s.length === 0) return 0
+        const parts = s.split(":")
+        if (parts.length < 2) return 0
+
+        let h = parseInt(parts[0])
+        let m = parseInt(parts[1])
+        if (isNaN(h)) h = 0
+        if (isNaN(m)) m = 0
+
+        h = Math.max(0, Math.min(23, h))
+        m = Math.max(0, Math.min(59, m))
+        return h * 60 + m
+    }
+
+    function dateAtMinutes(baseDate, minutes) {
+        const d = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), 0, 0, 0, 0)
+        d.setMinutes(minutes)
+        return d
+    }
+
+    function computeNextIntervalFireMs(nowMs, startTime, endTime, intervalMinutes) {
+        const now = new Date(nowMs)
+
+        const startMin = parseHHMMToMinutes(startTime)
+        const endMin = parseHHMMToMinutes(endTime)
+
+        let start = dateAtMinutes(now, startMin)
+        let end = dateAtMinutes(now, endMin)
+
+        // start==end => ganzer Tag (bis morgen)
+        if (endMin === startMin) {
+            end.setDate(end.getDate() + 1)
+        } else if (endMin < startMin) {
+            // über Mitternacht
+            end.setDate(end.getDate() + 1)
+        }
+
+        // vor Start -> Start ist nächste Auslösung
+        if (now.getTime() < start.getTime()) {
+            return start.getTime()
+        }
+
+        // nach Ende -> nächster Tag Start
+        if (now.getTime() >= end.getTime()) {
+            start.setDate(start.getDate() + 1)
+            return start.getTime()
+        }
+
+        const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000
+        const elapsedMs = now.getTime() - start.getTime()
+
+        let k = Math.ceil(elapsedMs / intervalMs)
+        if (k < 0) k = 0
+
+        let next = new Date(start.getTime() + k * intervalMs)
+
+        if (next.getTime() < start.getTime())
+            next = start
+
+        if (next.getTime() >= end.getTime()) {
+            start.setDate(start.getDate() + 1)
+            next = start
+        }
+
+        return next.getTime()
+    }
+
+    function scheduleIntervalForIndex(idx, nowMs) {
+        if (idx < 0 || idx >= actionModel.count) return
+        const o = actionModel.get(idx)
+
+        if ((o.mode || "fixed") !== "interval") {
+            actionModel.setProperty(idx, "nextInMinutes", -1)
+            actionModel.setProperty(idx, "nextFireMs", 0)
+            actionModel.setProperty(idx, "lastFiredMs", 0)
+            return
+        }
+
+        const intervalMinutes = parseInt(o.intervalMinutes || 0)
+        if (!intervalMinutes || intervalMinutes <= 0) {
+            actionModel.setProperty(idx, "nextInMinutes", -1)
+            actionModel.setProperty(idx, "nextFireMs", 0)
+            actionModel.setProperty(idx, "lastFiredMs", 0)
+            return
+        }
+
+        const nextMs = computeNextIntervalFireMs(nowMs, o.startTime || "", o.endTime || "", intervalMinutes)
+        actionModel.setProperty(idx, "nextFireMs", nextMs)
+        actionModel.setProperty(idx, "lastFiredMs", 0)
+
+        const minsLeft = Math.max(0, Math.ceil((nextMs - nowMs) / 60000.0))
+        actionModel.setProperty(idx, "nextInMinutes", minsLeft)
+    }
+
     // -------------------------
-    // Header (+ neben Ton-Button)
+    // Header
     // -------------------------
     header: ToolBar {
         id: topBar
@@ -330,27 +560,21 @@ ApplicationWindow {
                     spacing: 10
                     Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
 
-                    Label {
-                        text: app.allSoundsDisabled ? "Töne: AUS" : "Töne: AN"
-                        opacity: 0.85
-                        font.pixelSize: 13
-                        verticalAlignment: Text.AlignVCenter
-                        color: "#444444"
-                    }
-
                     Button {
-                        id: soundToggleBtn
-                        text: app.allSoundsDisabled ? "Ton an" : "Ton ausschalten"
-                        onClicked: {
-                            app.allSoundsDisabled = !app.allSoundsDisabled
-                            saveNow()
-                        }
-
+                        id: actionsToggleBtn
+                        text: app.actionsRunning ? "Aktionen stoppen" : "Aktionen starten"
                         height: 34
                         padding: 10
 
+                        onClicked: {
+                            if (app.actionsRunning)
+                                app.stopActions()
+                            else
+                                app.startActions()
+                        }
+
                         contentItem: Text {
-                            text: soundToggleBtn.text
+                            text: actionsToggleBtn.text
                             color: "white"
                             font.pixelSize: 13
                             horizontalAlignment: Text.AlignHCenter
@@ -361,12 +585,11 @@ ApplicationWindow {
                         background: Rectangle {
                             radius: 10
                             border.color: "#2b2b2b"
-                            color: app.allSoundsDisabled ? "#9e9e9e" : "#2e7d32"
-                            opacity: soundToggleBtn.down ? 0.85 : 1.0
+                            color: app.actionsRunning ? "#616161" : "#2e7d32"
+                            opacity: actionsToggleBtn.down ? 0.85 : 1.0
                         }
                     }
 
-                    // ✅ neuer + Button im Kopf (statt Floating)
                     Button {
                         id: addHeaderBtn
                         width: 80
@@ -400,7 +623,7 @@ ApplicationWindow {
     }
 
     // -------------------------
-    // Auto-scroll
+    // Auto-scroll (damit + nicht über Editbereich hängt)
     // -------------------------
     function ensureIndexVisible(idx) {
         if (idx < 0) return
@@ -490,15 +713,19 @@ ApplicationWindow {
                 startTime: model.startTime
                 endTime: model.endTime
                 intervalMinutes: model.intervalMinutes
+
+                // Countdown für Anzeige (in X Min)
+                nextInMinutes: (app.actionsRunning && typeof model.nextInMinutes === "number") ? model.nextInMinutes : -1
+
                 sound: model.sound
                 soundEnabled: model.soundEnabled
                 volume: model.volume
                 onVolumeEdited: function(v) { app.setRole(index, "volume", v) }
 
-                // NEW: Liste der Sounds für den Dialog
+                // Liste der Sounds für den Dialog
                 soundChoices: app.soundChoices
 
-                // NEW: Preview spielt gewählten Sound
+                // Preview spielt gewählten Sound (über Queue)
                 onPreviewSoundRequested: function(name) { app.playSoundPreview(name, delegateRoot.volume) }
 
                 onToggleRequested: function(idx) {

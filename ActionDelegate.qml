@@ -37,6 +37,9 @@ Rectangle {
     // Anzeige-Name: wenn leer -> Bell
     readonly property string soundDisplayName: (root.sound && root.sound.trim().length > 0) ? root.sound.trim() : "Bell"
 
+    property int nextInMinutes: -1   // wird von Main gesetzt
+
+
     property real volume: 1.0   // 0.0 .. 1.0 (pro Aktion)
 
     signal toggleRequested(int idx)
@@ -603,7 +606,13 @@ Rectangle {
                                 Layout.topMargin: -55     // <-- schiebt die Zeile nach unten
 
                                 Text { text: "Intervall:"; font.pixelSize: 13; color: "#555555" }
-                                Text { text: root.intervalMinutesText(); font.pixelSize: 13; color: "#444444" }
+                                Text {
+                                    font.pixelSize: 13
+                                    color: "#444444"
+                                    text: root.intervalMinutesText()
+                                          + (root.nextInMinutes >= 0 ? (" (in " + root.nextInMinutes + " Min)") : "")
+                                    elide: Text.ElideRight
+                                }
                                 Item { Layout.fillWidth: true }
                             }
                             RowLayout {
