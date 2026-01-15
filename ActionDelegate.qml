@@ -38,9 +38,14 @@ Rectangle {
     readonly property string soundDisplayName: (root.sound && root.sound.trim().length > 0) ? root.sound.trim() : "Bell"
 
     property int nextInMinutes: -1   // wird von Main gesetzt
-
+    property int nextInSeconds: -1   // <60s -> mm:ss Anzeige
 
     property real volume: 1.0   // 0.0 .. 1.0 (pro Aktion)
+
+    property int nextFixedH: -1
+    property int nextFixedM: -1
+    property int nextFixedS: -1   // nur in letzter Minute (sonst -1)
+
 
     signal toggleRequested(int idx)
     signal deleteRequested(int idx)
@@ -56,8 +61,34 @@ Rectangle {
     signal soundEnabledEdited(bool v)
     signal volumeEdited(real v)
 
+
     // NEW: Preview mit Sound-Namen
     signal previewSoundRequested(string soundName)
+
+    function _pad2(n) {
+        return (n < 10) ? ("0" + n) : ("" + n)
+    }
+
+    function nextCountdownSuffix() {
+        // FIXED: hh:mm bzw. hh:mm:ss in letzter Minute
+        if (root.mode === "fixed") {
+            if (root.nextFixedS >= 0 && root.nextFixedH >= 0 && root.nextFixedM >= 0)
+                return " (in " + _pad2(root.nextFixedH) + ":" + _pad2(root.nextFixedM) + ":" + _pad2(root.nextFixedS) + ")"
+            if (root.nextFixedH >= 0 && root.nextFixedM >= 0)
+                return " (in " + _pad2(root.nextFixedH) + ":" + _pad2(root.nextFixedM) + ")"
+            return ""
+        }
+
+        // INTERVALL: mm:ss in letzter Minute, sonst "X Min"
+        if (root.nextInSeconds >= 0) {
+            const mm = Math.floor(root.nextInSeconds / 60)
+            const ss = root.nextInSeconds % 60
+            return " (in " + _pad2(mm) + ":" + _pad2(ss) + ")"
+        }
+        if (root.nextInMinutes >= 0)
+            return " (in " + root.nextInMinutes + " Min)"
+        return ""
+    }
 
     function _setIfChangedString(propName, newValue, sig) {
         if (root[propName] !== newValue) {
@@ -541,7 +572,7 @@ Rectangle {
     }
     function intervalMinutesText() {
         var minutes = (root.intervalMinutes > 0) ? root.intervalMinutes : 60
-        return minutes + " Minuten"
+        return minutes + " Min."
     }
 
     Item {
@@ -609,8 +640,7 @@ Rectangle {
                                 Text {
                                     font.pixelSize: 13
                                     color: "#444444"
-                                    text: root.intervalMinutesText()
-                                          + (root.nextInMinutes >= 0 ? (" (in " + root.nextInMinutes + " Min)") : "")
+                                    text: root.intervalMinutesText() + root.nextCountdownSuffix()
                                     elide: Text.ElideRight
                                 }
                                 Item { Layout.fillWidth: true }
@@ -620,8 +650,8 @@ Rectangle {
                                 spacing: 6
                                 Layout.topMargin: -55     // <-- schiebt die Zeile nach unten
                                 Layout.fillWidth: true
-                                Text { text: "Feste Uhrzeit:"; font.pixelSize: 13; color: "#555555" }
-                                Text { text: root.fixedTimeText() + " Uhr"; font.pixelSize: 13; color: "#444444"; elide: Text.ElideRight }
+                                Text { text: "Um:"; font.pixelSize: 13; color: "#555555" }
+                                Text { text: root.fixedTimeText() + " Uhr" + root.nextCountdownSuffix(); font.pixelSize: 13; color: "#444444"; elide: Text.ElideRight }
                                 Item { Layout.fillWidth: true }
                             }
                         }
@@ -897,7 +927,7 @@ Rectangle {
                             }
 
                             InlineNumberField {
-                                label: "Intervall (Minuten)"
+                                label: "Intervall (Min.)"
                                 value: root.intervalMinutes
                                 minValue: 1
                                 maxValue: 24 * 60

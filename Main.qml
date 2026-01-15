@@ -95,6 +95,46 @@ ApplicationWindow {
         }
         return JSON.stringify(arr)
     }
+    // NEW: hält ein Element, bis SoundEffect wirklich Ready ist
+    property var _pendingSfxItem: null
+
+    function _pumpSoundQueue() {
+        if (_soundQueue.length === 0 && _pendingSfxItem === null) return
+        if (previewSfx.playing) return
+
+        const now = Date.now()
+        if ((now - _lastSoundStartMs) < _minSoundGapMs) return
+
+        // Falls noch nichts "pending" ist -> eins holen, aber ggf. erst laden lassen
+        if (_pendingSfxItem === null) {
+            _pendingSfxItem = _soundQueue.shift()
+            desiredPreviewSource = _pendingSfxItem.src
+            desiredPreviewVolume = _pendingSfxItem.vol
+
+            if (previewSfx.source !== desiredPreviewSource) {
+                previewSfx.source = desiredPreviewSource
+                return // warten bis Status=Ready
+            }
+        }
+
+        // Ab hier: wir haben ein pending Item und Source ist gesetzt
+        if (previewSfx.status === SoundEffect.Loading) return
+
+        if (previewSfx.status === SoundEffect.Error) {
+            // Requeue + safe reset
+            _soundQueue.unshift(_pendingSfxItem)
+            _pendingSfxItem = null
+            resetPreviewSfx("pump saw SoundEffect.Error")
+            _lastSoundStartMs = now
+            return
+        }
+
+        if (previewSfx.status !== SoundEffect.Ready) return
+
+        _lastSoundStartMs = now
+        previewSfx.play()
+        _pendingSfxItem = null
+    }
 
     function loadFromJson(jsonStr) {
         try {
@@ -173,9 +213,21 @@ ApplicationWindow {
             ensureVisibleTimer.kick(idx)
         }
 
-        // wenn Aktionen laufen und Intervall-Parameter geändert werden -> neu planen
-        if (actionsRunning && (role === "mode" || role === "startTime" || role === "endTime" || role === "intervalMinutes")) {
-            scheduleIntervalForIndex(idx, Date.now())
+        // wenn Aktionen laufen und zeit-relevante Parameter geändert werden -> neu planen
+        if (actionsRunning && (
+                role === "mode" ||
+                role === "startTime" || role === "endTime" || role === "intervalMinutes" ||
+                role === "fixedTime"
+            )) {
+
+            // wichtig: alte Planung ungültig machen (sonst bleibt nextFireMs "alt")
+            actionModel.setProperty(idx, "nextFireMs", 0)
+            actionModel.setProperty(idx, "lastFiredMs", 0)
+
+            // Neu planen (für interval ODER fixed, je nach mode)
+            Qt.callLater(function() {
+                scheduleForIndex(idx, Date.now())
+            })
         }
     }
 
@@ -198,7 +250,7 @@ ApplicationWindow {
         saveNow()
 
         if (actionsRunning) {
-            scheduleIntervalForIndex(idx, Date.now())
+            scheduleForIndex(idx, Date.now())
         }
     }
 
@@ -250,35 +302,42 @@ ApplicationWindow {
     MediaDevices {
         id: mediaDevices
         onDefaultAudioOutputChanged: {
-            if (previewSfx.playing || app._soundQueue.length > 0)
+            if (previewSfx.playing || app._soundQueue.length > 0 || app._pendingSfxItem)
                 app.resetPreviewSfx("defaultAudioOutputChanged")
         }
         onAudioOutputsChanged: {
-            if (previewSfx.playing || app._soundQueue.length > 0)
+            if (previewSfx.playing || app._soundQueue.length > 0 || app._pendingSfxItem)
                 app.resetPreviewSfx("audioOutputsChanged")
         }
     }
 
     Timer {
-        id: previewResetDebounce
-        interval: 150
+        id: sfxSafeReset
+        interval: 250
         repeat: false
         property string reason: ""
 
         onTriggered: {
-            console.log("[Main:SFX] RESET now reason=", reason, " src=", app.desiredPreviewSource)
-            previewSfx.stop()
+            // Wenn noch irgendwas spielt: erst stoppen, dann nächsten Tick nochmal versuchen
+            if (previewSfx.playing) {
+                previewSfx.stop()
+                sfxSafeReset.restart()
+                return
+            }
+
+            // Source sauber "neu laden"
+            const src = app.desiredPreviewSource
             previewSfx.source = ""
-            previewSfx.source = app.desiredPreviewSource
+            Qt.callLater(function() { previewSfx.source = src })
         }
     }
 
     function resetPreviewSfx(reason) {
-        console.log("[Main:SFX] resetPreviewSfx request reason=", reason,
-                    " status=", previewSfx.status, " playing=", previewSfx.playing,
-                    " src=", previewSfx.source)
-        previewResetDebounce.reason = reason
-        previewResetDebounce.restart()
+        console.log("[Main:SFX] resetPreviewSfx reason=", reason)
+        // optional: pending verwerfen, damit nichts auf einem kaputten Stream hängt
+        _pendingSfxItem = null
+        sfxSafeReset.reason = reason
+        sfxSafeReset.restart()
     }
 
     // =========================================================
@@ -313,33 +372,6 @@ ApplicationWindow {
         enqueueSound(soundName, vol, true)
     }
 
-    function _pumpSoundQueue() {
-        if (_soundQueue.length === 0) return
-        if (previewSfx.playing) return
-
-        const now = Date.now()
-        if ((now - _lastSoundStartMs) < _minSoundGapMs) return
-
-        const it = _soundQueue.shift()
-
-        desiredPreviewSource = it.src
-        desiredPreviewVolume = it.vol
-
-        if (previewSfx.source !== it.src)
-            previewSfx.source = it.src
-
-        if (previewSfx.status === SoundEffect.Error) {
-            // Re-queue vorne und resetten
-            _soundQueue.unshift(it)
-            resetPreviewSfx("pump saw Error")
-            _lastSoundStartMs = now
-            return
-        }
-
-        _lastSoundStartMs = now
-        previewSfx.stop()
-        previewSfx.play()
-    }
 
     // =========================================================
     // Scheduler: Intervall (Minuten)
@@ -370,15 +402,180 @@ ApplicationWindow {
         // runtime anzeigen reset
         for (let i = 0; i < actionModel.count; i++) {
             actionModel.setProperty(i, "nextInMinutes", -1)
+            actionModel.setProperty(i, "nextInSeconds", -1)
+
+            actionModel.setProperty(i, "nextFixedH", -1)
+            actionModel.setProperty(i, "nextFixedM", -1)
+            actionModel.setProperty(i, "nextFixedS", -1)
+
             actionModel.setProperty(i, "nextFireMs", 0)
             actionModel.setProperty(i, "lastFiredMs", 0)
         }
     }
 
+
+    // Setzt nextInMinutes / nextInSeconds konsistent:
+    // - >= 60s: nur volle Minuten (floor), nextInSeconds = -1
+    // - < 60s : nextInMinutes = 0, nextInSeconds = 0..59 (floor, clamp)
+    function _setCountdown(index, targetMs, nowMs) {
+        if (!targetMs || isNaN(targetMs) || targetMs <= 0) {
+            actionModel.setProperty(index, "nextInMinutes", -1)
+            actionModel.setProperty(index, "nextInSeconds", -1)
+            return
+        }
+
+        const msLeft = targetMs - nowMs
+
+        if (msLeft <= 0) {
+            actionModel.setProperty(index, "nextInMinutes", 0)
+            actionModel.setProperty(index, "nextInSeconds", 0)
+            return
+        }
+
+        if (msLeft <= 60000) {
+            // <= 1 Minute: mm:ss (inkl. 01:00)
+            const secsTotal = Math.min(60, Math.max(0, Math.ceil(msLeft / 1000.0))) // 60..0
+            actionModel.setProperty(index, "nextInMinutes", 0)     // egal, UI nimmt seconds zuerst
+            actionModel.setProperty(index, "nextInSeconds", secsTotal)
+            return
+        }
+
+        // > 1 Minute: Minuten aufrunden (2 Min bis 1:00)
+        const mins = Math.max(1, Math.ceil(msLeft / 60000.0))
+        actionModel.setProperty(index, "nextInMinutes", mins)
+        actionModel.setProperty(index, "nextInSeconds", -1)
+    }
+
+    function computeNextFixedFireMs(nowMs, fixedTime) {
+        const now = new Date(nowMs)
+        const tMin = parseHHMMToMinutes(fixedTime || "00:00")
+        let target = dateAtMinutes(now, tMin)
+        // wenn Uhrzeit heute schon vorbei -> morgen
+        if (now.getTime() >= target.getTime())
+            target.setDate(target.getDate() + 1)
+        return target.getTime()
+    }
+
+    function _clearIntervalCountdown(i) {
+        actionModel.setProperty(i, "nextInMinutes", -1)
+        actionModel.setProperty(i, "nextInSeconds", -1)
+    }
+    function _clearFixedCountdown(i) {
+        actionModel.setProperty(i, "nextFixedH", -1)
+        actionModel.setProperty(i, "nextFixedM", -1)
+        actionModel.setProperty(i, "nextFixedS", -1)
+    }
+
+    // Intervall: >60s => Minuten (ceil), <=60s => mm:ss (Sekunden gesamt 60..0)
+    function _setIntervalCountdown(i, targetMs, nowMs) {
+        _clearFixedCountdown(i)
+
+        const msLeft = targetMs - nowMs
+        if (msLeft <= 0) {
+            actionModel.setProperty(i, "nextInMinutes", 0)
+            actionModel.setProperty(i, "nextInSeconds", 0)
+            return
+        }
+
+        if (msLeft <= 60000) {
+            const secsTotal = Math.max(0, Math.floor(msLeft / 1000.0))  // 60..0
+            actionModel.setProperty(i, "nextInMinutes", -1)
+            actionModel.setProperty(i, "nextInSeconds", secsTotal)
+            return
+        }
+
+        const mins = Math.max(1, Math.ceil(msLeft / 60000.0))
+        actionModel.setProperty(i, "nextInMinutes", mins)
+        actionModel.setProperty(i, "nextInSeconds", -1)
+    }
+
+    // Fixed: >60s => hh:mm (Minuten aufrunden), <=60s => hh:mm:ss
+    function _setFixedCountdown(i, targetMs, nowMs) {
+        _clearIntervalCountdown(i)
+
+        const msLeft = targetMs - nowMs
+        if (msLeft <= 0) {
+            actionModel.setProperty(i, "nextFixedH", 0)
+            actionModel.setProperty(i, "nextFixedM", 0)
+            actionModel.setProperty(i, "nextFixedS", 0)
+            return
+        }
+
+        if (msLeft <= 60000) {
+            const totalSec = Math.max(0, Math.floor(msLeft / 1000.0)) // 60..0
+            const h = Math.floor(totalSec / 3600)
+            const m = Math.floor((totalSec % 3600) / 60)
+            const s = totalSec % 60
+            actionModel.setProperty(i, "nextFixedH", h)
+            actionModel.setProperty(i, "nextFixedM", m)
+            actionModel.setProperty(i, "nextFixedS", s)
+            return
+        }
+
+        const totalMin = Math.max(1, Math.ceil(msLeft / 60000.0))
+        const h2 = Math.floor(totalMin / 60)
+        const m2 = totalMin % 60
+        actionModel.setProperty(i, "nextFixedH", h2)
+        actionModel.setProperty(i, "nextFixedM", m2)
+        actionModel.setProperty(i, "nextFixedS", -1)
+    }
+
+    function scheduleForIndex(idx, nowMs) {
+        if (idx < 0 || idx >= actionModel.count) return
+        const o = actionModel.get(idx)
+        const mode = (o.mode || "fixed")
+        if (mode === "interval")
+            scheduleIntervalForIndex(idx, nowMs)
+        else
+            scheduleFixedForIndex(idx, nowMs)
+    }
+
+    function scheduleFixedForIndex(idx, nowMs) {
+        if (idx < 0 || idx >= actionModel.count) return
+        const o = actionModel.get(idx)
+
+        if ((o.mode || "fixed") !== "fixed") {
+            _clearFixedCountdown(idx)
+            actionModel.setProperty(idx, "nextFireMs", 0)
+            actionModel.setProperty(idx, "lastFiredMs", 0)
+            return
+        }
+
+        const nextMs = computeNextFixedFireMs(nowMs, o.fixedTime || "00:00")
+        actionModel.setProperty(idx, "nextFireMs", nextMs)
+        actionModel.setProperty(idx, "lastFiredMs", 0)
+        _setFixedCountdown(idx, nextMs, nowMs)
+    }
+
+    function scheduleIntervalForIndex(idx, nowMs) {
+        if (idx < 0 || idx >= actionModel.count) return
+        const o = actionModel.get(idx)
+
+        if ((o.mode || "fixed") !== "interval") {
+            _clearIntervalCountdown(idx)
+            actionModel.setProperty(idx, "nextFireMs", 0)
+            actionModel.setProperty(idx, "lastFiredMs", 0)
+            return
+        }
+
+        const intervalMinutes = parseInt(o.intervalMinutes || 0)
+        if (!intervalMinutes || intervalMinutes <= 0) {
+            _clearIntervalCountdown(idx)
+            actionModel.setProperty(idx, "nextFireMs", 0)
+            actionModel.setProperty(idx, "lastFiredMs", 0)
+            return
+        }
+
+        const nextMs = computeNextIntervalFireMs(nowMs, o.startTime || "", o.endTime || "", intervalMinutes)
+        actionModel.setProperty(idx, "nextFireMs", nextMs)
+        actionModel.setProperty(idx, "lastFiredMs", 0)
+        _setIntervalCountdown(idx, nextMs, nowMs)
+    }
+
     function schedulerInit() {
         const nowMs = Date.now()
         for (let i = 0; i < actionModel.count; i++) {
-            scheduleIntervalForIndex(i, nowMs)
+            scheduleForIndex(i, nowMs)
         }
         schedulerStep()
     }
@@ -390,45 +587,64 @@ ApplicationWindow {
 
         for (let i = 0; i < actionModel.count; i++) {
             const o = actionModel.get(i)
-            if ((o.mode || "fixed") !== "interval") {
-                actionModel.setProperty(i, "nextInMinutes", -1)
-                actionModel.setProperty(i, "nextFireMs", 0)
-                actionModel.setProperty(i, "lastFiredMs", 0)
-                continue
-            }
+            const mode = (o.mode || "fixed")
 
-            const intervalMinutes = parseInt(o.intervalMinutes || 0)
-            if (!intervalMinutes || intervalMinutes <= 0) {
-                actionModel.setProperty(i, "nextInMinutes", -1)
-                actionModel.setProperty(i, "nextFireMs", 0)
-                continue
-            }
-
-            let nextMs = parseInt(o.nextFireMs || 0)
-            if (!nextMs || isNaN(nextMs)) {
-                nextMs = computeNextIntervalFireMs(nowMs, o.startTime || "", o.endTime || "", intervalMinutes)
-                actionModel.setProperty(i, "nextFireMs", nextMs)
-            }
-
-            const minsLeft = Math.max(0, Math.ceil((nextMs - nowMs) / 60000.0))
-            actionModel.setProperty(i, "nextInMinutes", minsLeft)
-
-            const lastFired = parseInt(o.lastFiredMs || 0)
-            if (nowMs >= nextMs && lastFired !== nextMs) {
-                actionModel.setProperty(i, "lastFiredMs", nextMs)
-
-                // Sound-Trigger (seriell, min 0.5s Abstand)
-                if (o.soundEnabled) {
-                    enqueueSound(o.sound || "Bell",
-                                (typeof o.volume === "number") ? o.volume : 1.0,
-                                false)
+            if (mode === "interval") {
+                const intervalMinutes = parseInt(o.intervalMinutes || 0)
+                if (!intervalMinutes || intervalMinutes <= 0) {
+                    _clearIntervalCountdown(i)
+                    actionModel.setProperty(i, "nextFireMs", 0)
+                    continue
                 }
 
-                const next2 = computeNextIntervalFireMs(nowMs + 1000, o.startTime || "", o.endTime || "", intervalMinutes)
-                actionModel.setProperty(i, "nextFireMs", next2)
+                let nextMs = parseInt(o.nextFireMs || 0)
+                if (!nextMs || isNaN(nextMs) || nextMs <= 0) {
+                    nextMs = computeNextIntervalFireMs(nowMs, o.startTime || "", o.endTime || "", intervalMinutes)
+                    actionModel.setProperty(i, "nextFireMs", nextMs)
+                }
 
-                const mins2 = Math.max(0, Math.ceil((next2 - (nowMs + 1000)) / 60000.0))
-                actionModel.setProperty(i, "nextInMinutes", mins2)
+                _setIntervalCountdown(i, nextMs, nowMs)
+
+                const lastFired = parseInt(o.lastFiredMs || 0)
+                if (nowMs >= nextMs && lastFired !== nextMs) {
+                    actionModel.setProperty(i, "lastFiredMs", nextMs)
+
+                    if (o.soundEnabled) {
+                        enqueueSound(o.sound || "Bell",
+                                    (typeof o.volume === "number") ? o.volume : 1.0,
+                                    false)
+                    }
+
+                    const baseNow = nowMs + 1000
+                    const next2 = computeNextIntervalFireMs(baseNow, o.startTime || "", o.endTime || "", intervalMinutes)
+                    actionModel.setProperty(i, "nextFireMs", next2)
+                    _setIntervalCountdown(i, next2, baseNow)
+                }
+
+            } else { // FIXED
+                let nextMsF = parseInt(o.nextFireMs || 0)
+                if (!nextMsF || isNaN(nextMsF) || nextMsF <= 0) {
+                    nextMsF = computeNextFixedFireMs(nowMs, o.fixedTime || "00:00")
+                    actionModel.setProperty(i, "nextFireMs", nextMsF)
+                }
+
+                _setFixedCountdown(i, nextMsF, nowMs)
+
+                const lastFiredF = parseInt(o.lastFiredMs || 0)
+                if (nowMs >= nextMsF && lastFiredF !== nextMsF) {
+                    actionModel.setProperty(i, "lastFiredMs", nextMsF)
+
+                    if (o.soundEnabled) {
+                        enqueueSound(o.sound || "Bell",
+                                    (typeof o.volume === "number") ? o.volume : 1.0,
+                                    false)
+                    }
+
+                    const baseNowF = nowMs + 1000
+                    const next2F = computeNextFixedFireMs(baseNowF, o.fixedTime || "00:00") // -> morgen
+                    actionModel.setProperty(i, "nextFireMs", next2F)
+                    _setFixedCountdown(i, next2F, baseNowF)
+                }
             }
         }
     }
@@ -501,33 +717,6 @@ ApplicationWindow {
         }
 
         return next.getTime()
-    }
-
-    function scheduleIntervalForIndex(idx, nowMs) {
-        if (idx < 0 || idx >= actionModel.count) return
-        const o = actionModel.get(idx)
-
-        if ((o.mode || "fixed") !== "interval") {
-            actionModel.setProperty(idx, "nextInMinutes", -1)
-            actionModel.setProperty(idx, "nextFireMs", 0)
-            actionModel.setProperty(idx, "lastFiredMs", 0)
-            return
-        }
-
-        const intervalMinutes = parseInt(o.intervalMinutes || 0)
-        if (!intervalMinutes || intervalMinutes <= 0) {
-            actionModel.setProperty(idx, "nextInMinutes", -1)
-            actionModel.setProperty(idx, "nextFireMs", 0)
-            actionModel.setProperty(idx, "lastFiredMs", 0)
-            return
-        }
-
-        const nextMs = computeNextIntervalFireMs(nowMs, o.startTime || "", o.endTime || "", intervalMinutes)
-        actionModel.setProperty(idx, "nextFireMs", nextMs)
-        actionModel.setProperty(idx, "lastFiredMs", 0)
-
-        const minsLeft = Math.max(0, Math.ceil((nextMs - nowMs) / 60000.0))
-        actionModel.setProperty(idx, "nextInMinutes", minsLeft)
     }
 
     // -------------------------
@@ -716,6 +905,11 @@ ApplicationWindow {
 
                 // Countdown für Anzeige (in X Min)
                 nextInMinutes: (app.actionsRunning && typeof model.nextInMinutes === "number") ? model.nextInMinutes : -1
+                nextInSeconds: (app.actionsRunning && typeof model.nextInSeconds === "number") ? model.nextInSeconds : -1
+
+                nextFixedH: (app.actionsRunning && typeof model.nextFixedH === "number") ? model.nextFixedH : -1
+                nextFixedM: (app.actionsRunning && typeof model.nextFixedM === "number") ? model.nextFixedM : -1
+                nextFixedS: (app.actionsRunning && typeof model.nextFixedS === "number") ? model.nextFixedS : -1
 
                 sound: model.sound
                 soundEnabled: model.soundEnabled
