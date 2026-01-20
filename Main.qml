@@ -56,6 +56,24 @@ ApplicationWindow {
     property bool allSoundsDisabled: false   // legacy (persistiert), aktuell nicht im UI benutzt
     property int expandedIndex: -1
 
+    property bool uiPaused: false
+
+    function updateUiPaused() {
+        uiPaused = (Qt.application.state !== Qt.ApplicationActive)
+    }
+
+    Connections {
+        target: Qt.application
+        function onStateChanged() { app.updateUiPaused() }
+    }
+
+    Timer {
+        interval: 200
+        running: actionsRunning && !uiPaused
+        repeat: true
+        onTriggered: schedulerStep()
+    }
+
     ListModel { id: actionModel }
 
     // -------------------------
@@ -64,6 +82,125 @@ ApplicationWindow {
     function soundSourceForName(name) {
         const key = (typeof name === "string" && name.trim().length > 0) ? name.trim() : "Bell"
         return soundMap[key] || soundMap["Bell"]
+    }
+
+    // Android notifications use res/raw resources (file name without extension)
+    function soundRawForName(name) {
+        const key = (typeof name === "string" && name.trim().length > 0) ? name.trim() : "Bell"
+        const map = {
+            "Bell":          "bell",
+            "Soft Chime":    "soft_chime",
+            "Beep Short":    "beep_short",
+            "Beep Double":   "beep_double",
+            "Pop Click":     "pop_click",
+            "Wood Tap":      "wood_tap",
+            "Marimba Hit":   "marimba_hit",
+            "Triangle Ping": "triangle_ping",
+            "Low Gong":      "low_gong",
+            "Airy Whoosh":   "airy_whoosh"
+        }
+        return map[key] || "bell"
+    }
+
+    // Stable IDs for Android AlarmManager (persisted)
+    property int nextAlarmId: 1
+    function ensureAlarmId(idx) {
+        if (idx < 0 || idx >= actionModel.count) return -1
+        const o = actionModel.get(idx)
+        if (typeof o.alarmId === "number" && o.alarmId > 0) return o.alarmId
+        const id = Math.max(1, nextAlarmId)
+        actionModel.setProperty(idx, "alarmId", id)
+        nextAlarmId = id + 1
+        saveNow()
+        return id
+    }
+
+    function normalizeAlarmIds() {
+        let maxId = 0
+        let changed = false
+        for (let i = 0; i < actionModel.count; i++) {
+            const o = actionModel.get(i)
+            let id = (typeof o.alarmId === "number") ? o.alarmId : 0
+            if (id <= 0) {
+                id = maxId + 1
+                actionModel.setProperty(i, "alarmId", id)
+                changed = true
+            }
+            if (id > maxId) maxId = id
+        }
+        nextAlarmId = maxId + 1
+
+        if (changed)
+            saveNow()
+    }
+
+    function _isAndroid() { return Qt.platform.os === "android" }
+    function _isAppActive() { return Qt.application.state === Qt.ApplicationActive }
+
+    function _shouldUseAndroidAlarmsNow() {
+        // We only schedule alarms while app is background/suspended to avoid double triggers.
+        return _isAndroid() && actionsRunning && !_isAppActive()
+    }
+
+    function _hasAndroidAlarmBridge() {
+        return (typeof AndroidAlarm !== "undefined") && AndroidAlarm
+    }
+
+    function cancelAndroidForIndex(idx) {
+        if (!_isAndroid() || !_hasAndroidAlarmBridge()) return
+        if (idx < 0 || idx >= actionModel.count) return
+        const o = actionModel.get(idx)
+        const id = (typeof o.alarmId === "number") ? o.alarmId : 0
+        if (id > 0) {
+            dbg("[AndroidAlarm] cancel idx=", idx, " id=", id)
+            AndroidAlarm.cancel(id)
+        }
+    }
+
+    function cancelAllAndroidAlarms() {
+        if (!_isAndroid() || !_hasAndroidAlarmBridge()) return
+        for (let i = 0; i < actionModel.count; i++) {
+            cancelAndroidForIndex(i)
+        }
+    }
+
+    function scheduleAndroidForIndex(idx, nowMs) {
+        if (!_shouldUseAndroidAlarmsNow() || !_hasAndroidAlarmBridge()) return
+        if (idx < 0 || idx >= actionModel.count) return
+
+        const id = ensureAlarmId(idx)
+        if (id <= 0) return
+
+        const o = actionModel.get(idx)
+        const fireMs = (typeof o.nextFireMs === "number") ? o.nextFireMs : 0
+        if (!fireMs || fireMs <= 0) return
+
+        const rawSound = soundRawForName(o.sound)
+        const title = (typeof o.text === "string" && o.text.length > 0) ? o.text : "Reminder"
+        const text = "" // keep short
+
+        dbg("[AndroidAlarm] schedule idx=", idx, " id=", id, " fire=", new Date(fireMs).toISOString(), " mode=", o.mode)
+        AndroidAlarm.scheduleWithParams(
+            fireMs,
+            rawSound,
+            id,
+            title,
+            text,
+            (o.mode === "interval" ? "interval" : "fixed"),
+            (o.fixedTime || "00:00"),
+            (o.startTime || ""),
+            (o.endTime || ""),
+            (typeof o.intervalMinutes === "number" ? o.intervalMinutes : parseInt(o.intervalMinutes || 0))
+        )
+    }
+
+    function scheduleAllAndroidAlarms() {
+        if (!_shouldUseAndroidAlarmsNow() || !_hasAndroidAlarmBridge()) return
+        const nowMs = Date.now()
+        for (let i = 0; i < actionModel.count; i++) {
+            scheduleForIndex(i, nowMs)
+            scheduleAndroidForIndex(i, nowMs)
+        }
     }
 
     // -------------------------
@@ -82,6 +219,7 @@ ApplicationWindow {
                 intervalMinutes = 60
 
             arr.push({
+                alarmId: (typeof o.alarmId === "number") ? o.alarmId : 0,
                 text: (o.text ?? "Neue Aktion"),
                 mode: (o.mode === "interval" ? "interval" : "fixed"),
                 fixedTime: (o.fixedTime ?? "00:00"),
@@ -154,6 +292,7 @@ ApplicationWindow {
                     intervalMinutes = 60
 
                 actionModel.append({
+                    alarmId: (typeof o.alarmId === "number") ? o.alarmId : parseInt(o.alarmId || 0),
                     text: (typeof o.text === "string" && o.text.trim().length > 0) ? o.text : "Neue Aktion",
                     mode: (o.mode === "interval" ? "interval" : "fixed"),
                     fixedTime: (typeof o.fixedTime === "string" && o.fixedTime.length > 0) ? o.fixedTime : "00:00",
@@ -165,6 +304,8 @@ ApplicationWindow {
                     volume: (typeof o.volume === "number") ? o.volume : parseFloat(o.volume || 1.0)
                 })
             }
+
+            normalizeAlarmIds()
             return true
         } catch (e) {
             console.warn("Load JSON failed:", e)
@@ -175,6 +316,7 @@ ApplicationWindow {
     function loadDefaults() {
         actionModel.clear()
         actionModel.append({
+            "alarmId": 1,
             "text": "Übung machen",
             "mode": "fixed",
             "fixedTime": "08:00",
@@ -186,6 +328,7 @@ ApplicationWindow {
             "volume": 1.0
         })
         actionModel.append({
+            "alarmId": 2,
             "text": "Trinken",
             "mode": "interval",
             "fixedTime": "00:00",
@@ -196,6 +339,8 @@ ApplicationWindow {
             "soundEnabled": true,
             "volume": 1.0
         })
+
+        normalizeAlarmIds()
     }
 
     function saveNow() {
@@ -226,13 +371,31 @@ ApplicationWindow {
 
             // Neu planen (für interval ODER fixed, je nach mode)
             Qt.callLater(function() {
-                scheduleForIndex(idx, Date.now())
+                const nowMs = Date.now()
+                scheduleForIndex(idx, nowMs)
+                scheduleAndroidForIndex(idx, nowMs)
+            })
+        }
+
+        // Android notification: update scheduled alarm when sound or soundEnabled changes while backgrounded
+        if (actionsRunning && (role === "sound" || role === "soundEnabled")) {
+            Qt.callLater(function() {
+                if (role === "soundEnabled" && value === false) {
+                    cancelAndroidForIndex(idx)
+                    return
+                }
+                const nowMs = Date.now()
+                scheduleForIndex(idx, nowMs)
+                scheduleAndroidForIndex(idx, nowMs)
             })
         }
     }
 
     function addNewAction() {
+        const newAlarmId = nextAlarmId
+        nextAlarmId += 1
         actionModel.append({
+            "alarmId": newAlarmId,
             "text": "Neue Aktion",
             "mode": "fixed",
             "fixedTime": "00:00",
@@ -250,7 +413,9 @@ ApplicationWindow {
         saveNow()
 
         if (actionsRunning) {
-            scheduleForIndex(idx, Date.now())
+            const nowMs = Date.now()
+            scheduleForIndex(idx, nowMs)
+            scheduleAndroidForIndex(idx, nowMs)
         }
     }
 
@@ -268,6 +433,9 @@ ApplicationWindow {
             loadDefaults()
             saveNow()
         }
+
+        // ensure stable alarm ids even if old state didn't have them
+        normalizeAlarmIds()
 
         // Aktionen NICHT automatisch starten
         actionsRunning = false
@@ -392,12 +560,25 @@ ApplicationWindow {
         actionsRunning = true
         schedulerInit()
         intervalScheduler.restart()
+
+        // Android: if app is already in background when starting, arm alarms immediately.
+        // If app is foreground, ensure stale alarms are canceled to avoid double triggers.
+        if (_isAndroid()) {
+            if (_isAppActive())
+                cancelAllAndroidAlarms()
+            else
+                scheduleAllAndroidAlarms()
+        }
     }
 
     function stopActions() {
         dbg("[Main] stopActions()")
         actionsRunning = false
         intervalScheduler.stop()
+
+        // Android: cancel all pending alarms when stopping
+        if (_isAndroid())
+            cancelAllAndroidAlarms()
 
         // runtime anzeigen reset
         for (let i = 0; i < actionModel.count; i++) {
@@ -410,6 +591,26 @@ ApplicationWindow {
 
             actionModel.setProperty(i, "nextFireMs", 0)
             actionModel.setProperty(i, "lastFiredMs", 0)
+        }
+    }
+
+    // When the app goes to background, Qt timers may pause (especially on Huawei/EMUI).
+    // We therefore arm Android AlarmManager notifications while backgrounded.
+    Connections {
+        target: Qt.application
+        function onStateChanged(state) {
+            if (!_isAndroid() || !actionsRunning) return
+
+            if (_isAppActive()) {
+                dbg("[AndroidAlarm] app active -> cancel all")
+                cancelAllAndroidAlarms()
+
+                // Refresh countdown immediately when coming back
+                schedulerInit()
+            } else {
+                dbg("[AndroidAlarm] app background -> schedule all")
+                scheduleAllAndroidAlarms()
+            }
         }
     }
 
@@ -940,6 +1141,9 @@ ApplicationWindow {
                 onDeleteRequested: function(idx) {
                     if (idx < 0 || idx >= actionModel.count) return
 
+                    // Cancel any pending Android alarm for this action (stable alarmId)
+                    cancelAndroidForIndex(idx)
+
                     if (app.expandedIndex === idx)
                         app.expandedIndex = -1
                     else if (app.expandedIndex > idx)
@@ -947,6 +1151,13 @@ ApplicationWindow {
 
                     actionModel.remove(idx, 1)
                     saveNow()
+
+                    // Re-initialize timers / alarms after deletion
+                    if (actionsRunning) {
+                        schedulerInit()
+                        if (_shouldUseAndroidAlarmsNow())
+                            scheduleAllAndroidAlarms()
+                    }
                 }
             }
         }

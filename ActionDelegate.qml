@@ -90,6 +90,61 @@ Rectangle {
         return ""
     }
 
+    function nextCountdownLine() {
+        // INTERVALL: nextInSeconds = Sekunden gesamt (z.B. 60..0), sonst nextInMinutes
+        if (root.mode === "interval") {
+            if (root.nextInSeconds >= 0) {
+                // < 1 Minute: nur Sekunden
+                return root.nextInSeconds + " Sekunden"
+            }
+            if (root.nextInMinutes >= 0) {
+                // ab 60 Minuten: hh:mm Stunden
+                if (root.nextInMinutes > 60) {
+                    const h = Math.floor(root.nextInMinutes / 60)
+                    const m = root.nextInMinutes % 60
+                    return _pad2(h) + ":" + _pad2(m) + " Stunden"
+                }
+                // sonst: Minuten
+                return root.nextInMinutes + " Minuten"
+            }
+            return ""
+        }
+
+        // FIXED: nextFixedH/M(/S)
+        if (root.mode === "fixed") {
+            if (root.nextFixedS >= 0 && root.nextFixedH >= 0 && root.nextFixedM >= 0) {
+                const totalSec = root.nextFixedH * 3600 + root.nextFixedM * 60 + root.nextFixedS
+                if (totalSec < 60) {
+                    return root.nextFixedS + " Sekunden"
+                }
+                // in letzter Minute bei fixed zeigen wir eh hh:mm:ss nicht mehr,
+                // aber falls totalSec < 3600: Minuten
+                if (totalSec < 3600) {
+                    return Math.floor(totalSec / 60) + " Minuten"
+                }
+                // >= 60 Minuten: hh:mm Stunden
+                const totalMin = Math.ceil(totalSec / 60)
+                const h = Math.floor(totalMin / 60)
+                const m = totalMin % 60
+                return _pad2(h) + ":" + _pad2(m) + " Stunden"
+            }
+
+            if (root.nextFixedH >= 0 && root.nextFixedM >= 0) {
+                // hier interpretieren wir nextFixedH/M als Restzeit in h/m (gerundet)
+                const totalMin = root.nextFixedH * 60 + root.nextFixedM
+                if (totalMin > 60) {
+                    return _pad2(root.nextFixedH) + ":" + _pad2(root.nextFixedM) + " Stunden"
+                }
+                if (totalMin >= 1) {
+                    return totalMin + " Minuten"
+                }
+            }
+            return ""
+        }
+
+        return ""
+    }
+
     function _setIfChangedString(propName, newValue, sig) {
         if (root[propName] !== newValue) {
             root[propName] = newValue
@@ -630,29 +685,64 @@ Rectangle {
                                 elide: Text.ElideRight
                             }
 
-                            RowLayout {
+                            ColumnLayout {
                                 visible: root.mode === "interval"
-                                spacing: 6
+                                spacing: 1
                                 Layout.fillWidth: true
-                                Layout.topMargin: -55     // <-- schiebt die Zeile nach unten
+                                Layout.topMargin: -55    // wie vorher
 
-                                Text { text: "Intervall:"; font.pixelSize: 13; color: "#555555" }
+                                RowLayout {
+                                    spacing: 6
+                                    Layout.fillWidth: true
+
+                                    Text { text: "Interval:"; font.pixelSize: 13; color: "#555555" }
+                                    Text {
+                                        font.pixelSize: 13
+                                        color: "#444444"
+                                        text: root.intervalMinutesText()
+                                        elide: Text.ElideRight
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                }
+
                                 Text {
-                                    font.pixelSize: 13
-                                    color: "#444444"
-                                    text: root.intervalMinutesText() + root.nextCountdownSuffix()
+                                    property string cd: root.nextCountdownLine()
+                                    visible: cd.length > 0
+                                    text: cd
+                                    font.pixelSize: 12
+                                    color: "#666666"
                                     elide: Text.ElideRight
                                 }
-                                Item { Layout.fillWidth: true }
                             }
-                            RowLayout {
+
+                            ColumnLayout {
                                 visible: root.mode === "fixed"
-                                spacing: 6
-                                Layout.topMargin: -55     // <-- schiebt die Zeile nach unten
+                                spacing: 1
                                 Layout.fillWidth: true
-                                Text { text: "Um:"; font.pixelSize: 13; color: "#555555" }
-                                Text { text: root.fixedTimeText() + " Uhr" + root.nextCountdownSuffix(); font.pixelSize: 13; color: "#444444"; elide: Text.ElideRight }
-                                Item { Layout.fillWidth: true }
+                                Layout.topMargin: -55    // wie vorher
+
+                                RowLayout {
+                                    spacing: 6
+                                    Layout.fillWidth: true
+
+                                    Text { text: "Um:"; font.pixelSize: 13; color: "#555555" }
+                                    Text {
+                                        text: root.fixedTimeText() + " Uhr"
+                                        font.pixelSize: 13
+                                        color: "#444444"
+                                        elide: Text.ElideRight
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                }
+
+                                Text {
+                                    property string cd: root.nextCountdownLine()
+                                    visible: cd.length > 0
+                                    text: cd
+                                    font.pixelSize: 12
+                                    color: "#666666"
+                                    elide: Text.ElideRight
+                                }
                             }
                         }
 
