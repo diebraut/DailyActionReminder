@@ -17,9 +17,19 @@ import android.os.PowerManager;
 
 import android.util.Log;
 
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+
 public class AlarmReceiver extends BroadcastReceiver {
 
     private static final String TAG = "AlarmReceiver";
+
+    // Notification
+    private static final String CH_ID   = "dailyactions_reminder";
+    private static final String CH_NAME = "DailyActionReminder";
+    private static final String CH_DESC = "Aktionen/Erinnerungen";
 
     // Hard stop damit "kurz piepen" garantiert kurz bleibt
     private static final int BEEP_MAX_MS = 1200;     // 1.2s
@@ -55,36 +65,78 @@ public class AlarmReceiver extends BroadcastReceiver {
 
             logAudioState(context);
 
+            // ✅ Notification anzeigen
+            showNotification(context.getApplicationContext(), intent, requestId);
+
             playShortBeep(context.getApplicationContext(), soundName, volume01, pr);
-            try {
-                // alle 10 Sekunden neu planen (Test)
-                long next = System.currentTimeMillis() + 10_000;
-                Log.w(TAG, "SELF-RESCHEDULE next=" + next);
-
-                AlarmScheduler.scheduleWithParams(
-                        context.getApplicationContext(),
-                        next,
-                        soundName != null ? soundName : "bell",
-                        requestId + 1,                 // neue ID!
-                        "TEST",
-                        "SELF RESCHEDULE",
-                        "test",
-                        "",
-                        "",
-                        "",
-                        0,
-                        volume01
-                );
-            } catch (Throwable t) {
-                Log.e(TAG, "SELF-RESCHEDULE failed", t);
-            }
-
+            // ✅ HIER: nächsten Intervall-Termin planen
+            AlarmScheduler.rescheduleNextFromIntent(context.getApplicationContext(), intent);
 
         } catch (Throwable t) {
             Log.e(TAG, "onReceive failed", t);
             safeFinish(pr);
         }
     }
+
+
+    // -------------------- NOTIFICATION --------------------
+    private static void ensureNotificationChannel(Context ctx) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+
+            NotificationChannel existing = nm.getNotificationChannel(CH_ID);
+            if (existing != null) return;
+
+            NotificationChannel ch = new NotificationChannel(
+                    CH_ID,
+                    CH_NAME,
+                    NotificationManager.IMPORTANCE_HIGH
+            );
+            ch.setDescription(CH_DESC);
+            nm.createNotificationChannel(ch);
+            Log.w(TAG, "NotificationChannel created: " + CH_ID);
+        }
+    }
+
+    private static void showNotification(Context ctx, Intent intent, int requestId) {
+        try {
+            ensureNotificationChannel(ctx);
+
+            String title = intent.getStringExtra(AlarmScheduler.EXTRA_TITLE);
+            String text  = intent.getStringExtra(AlarmScheduler.EXTRA_TEXT);
+
+            if (title == null || title.trim().isEmpty()) title = "DailyActions";
+            if (text == null) text = "";
+
+            // Tap -> App öffnen
+            Intent open = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
+            PendingIntent pi = null;
+            if (open != null) {
+                open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+                if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+                pi = PendingIntent.getActivity(ctx, requestId, open, flags);
+            }
+
+            NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CH_ID)
+                    .setSmallIcon(R.drawable.ic_stat_notify) // <-- Icon anlegen!
+                    .setContentTitle(title)
+                    .setContentText(text)
+                    .setStyle(new NotificationCompat.BigTextStyle().bigText(text))
+                    .setAutoCancel(true)
+                    .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH);
+
+            if (pi != null) b.setContentIntent(pi);
+
+            NotificationManagerCompat.from(ctx).notify(requestId, b.build());
+        } catch (Throwable t) {
+            Log.w(TAG, "showNotification failed: " + t);
+        }
+    }
+
 
     private static void logAudioState(Context ctx) {
         try {

@@ -20,8 +20,10 @@ qt_add_qml_module(appDailyActionReminder
         RESOURCES
         SOURCES appstorage.h appstorage.cpp
         RESOURCES sounds/airy_whoosh.wav sounds/beep_double.wav sounds/beep_short.wav sounds/low_gong.wav sounds/marimba_hit.wav sounds/pop_click.wav sounds/soft_chime.wav sounds/triangle_ping.wav sounds/wood_tap.wav
-        SOURCES androidbackground.h androidbackground.cpp
-        SOURCES AndroidAlarmBridge.cpp AndroidAlarmBridge.h
+        SOURCES
+        SOURCES
+        SOURCES SoundTaskManager.cpp SoundTaskManager.h
+        SOURCES logqml.h logqml.cpp
 )
 qt_add_resources(appDailyActionReminder
     "qml"

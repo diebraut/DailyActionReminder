@@ -3,6 +3,8 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtMultimedia
 
+import DailyActions 1.0
+
 ApplicationWindow {
     id: app
     width: 390
@@ -15,10 +17,9 @@ ApplicationWindow {
     // Debug
     // -------------------------
     property bool dbgEnabled: false
-    function dbg() {
-        if (!dbgEnabled) return
-        console.log.apply(console, arguments)
-    }
+    function lw(){if(typeof Log==='undefined'||!Log||typeof Log.w!=='function')return;Log.w(Array.prototype.join.call(arguments,' '))}
+
+    function dbg(){if(!dbgEnabled)return;lw.apply(null,arguments)}
 
     // -------------------------
     // Sound mapping (Name -> qrc:/sounds/...)
@@ -55,8 +56,572 @@ ApplicationWindow {
     property bool actionsRunning: false
     property bool allSoundsDisabled: false   // legacy (persistiert), aktuell nicht im UI benutzt
     property int expandedIndex: -1
-
     property bool uiPaused: false
+    property bool configured: false
+
+    // Defaults
+    // (WICHTIG: Display-Name speichern, nicht "bell")
+    property string pSoundName: "Bell"
+    property string pMode: "fixedTime"     // "interval" oder "fixedTime"
+    property string pFixedTime: "12:00"
+    property string pStartTime: "09:00"
+    property string pEndTime: "00:00"
+    property int    pIntervalSeconds: 10
+    property real   pVolume01: 1.0
+
+    // Fester AlarmId nur für den Test
+    property int testAlarmId: 777001
+
+    Connections {
+        target: (typeof SoundTaskManager !== "undefined") ? SoundTaskManager : null
+        function onLogLine(s) { lw("[SoundTaskManager]", s) }
+    }
+
+
+    function _canonicalSoundChoice(name) {
+        const s0 = (typeof name === "string") ? name.trim().toLowerCase() : ""
+        if (!s0) return "Bell"
+
+        // 1) Match Anzeige-Namen
+        for (let i = 0; i < soundChoices.length; i++) {
+            if (soundChoices[i].toLowerCase() === s0)
+                return soundChoices[i]
+        }
+
+        // 2) Match raw-Namen (bell, soft_chime, ...)
+        const rawToChoice = {
+            "bell": "Bell",
+            "soft_chime": "Soft Chime",
+            "beep_short": "Beep Short",
+            "beep_double": "Beep Double",
+            "pop_click": "Pop Click",
+            "wood_tap": "Wood Tap",
+            "marimba_hit": "Marimba Hit",
+            "triangle_ping": "Triangle Ping",
+            "low_gong": "Low Gong",
+            "airy_whoosh": "Airy Whoosh"
+        }
+        if (rawToChoice[s0]) return rawToChoice[s0]
+
+        // 3) Falls jemand "soft_chime.wav" etc eingibt
+        const s1 = s0.replace(/\.(wav|mp3|ogg)$/i, "")
+        if (rawToChoice[s1]) return rawToChoice[s1]
+
+        return "Bell"
+    }
+
+    function _isValidHHMM(t) {
+        if (typeof t !== "string") return false
+        const m = t.trim().match(/^([01]?\d|2[0-3]):([0-5]\d)$/)
+        return !!m
+    }
+
+    function _hhmmNow() {
+        const d = new Date()
+        const hh = String(d.getHours()).padStart(2, "0")
+        const mm = String(d.getMinutes()).padStart(2, "0")
+        return hh + ":" + mm
+    }
+
+    // == Test-Funktion ==
+    function startAndroidTestSchedule(rawSound, mode, fixedTime, startTime, endTime, intervalSec, volume01) {
+        // --------- guard: SoundTaskManager muss vorhanden sein ----------
+        if (typeof SoundTaskManager === "undefined" || !SoundTaskManager) {
+            lw("[TestSchedule] SoundTaskManager missing")
+            return -1
+        }
+
+        // normalize volume
+        var vol = Number(volume01)
+        if (isNaN(vol)) vol = 1.0
+        if (vol < 0) vol = 0
+        if (vol > 1) vol = 1
+
+        // helper: "HH:MM" -> {h,m}  (returns null on bad)
+        function parseHHMM(s) {
+            if (!s || typeof s !== "string") return null
+            var p = s.split(":")
+            if (p.length < 2) return null
+            var h = parseInt(p[0], 10)
+            var m = parseInt(p[1], 10)
+            if (isNaN(h) || isNaN(m)) return null
+            if (h < 0 || h > 23 || m < 0 || m > 59) return null
+            return { h: h, m: m }
+        }
+
+        // helper: today at HH:MM (local)
+        function todayAt(h, m) {
+            var d = new Date()
+            d.setSeconds(0)
+            d.setMilliseconds(0)
+            d.setHours(h)
+            d.setMinutes(m)
+            return d
+        }
+
+        // ---------- FIXED TIME ----------
+        var isFixed = (mode === "fixed" || mode === "fixedTime" || mode === "fixedtime")
+        if (isFixed) {
+            var fm = parseHHMM(fixedTime)
+            if (!fm) {
+                lw("[TestSchedule] fixedTime invalid:", fixedTime)
+                return -1
+            }
+
+            var t = todayAt(fm.h, fm.m)
+            var now = new Date()
+            if (t.getTime() <= now.getTime()) {
+                // nächster Tag
+                t.setDate(t.getDate() + 1)
+            }
+
+            if (typeof SoundTaskManager.startFixedSoundTask !== "function") {
+                lw("[TestSchedule] startFixedSoundTask() not available on SoundTaskManager")
+                return -1
+            }
+
+            var idFixed = SoundTaskManager.startFixedSoundTask(
+                rawSound,
+                "Test: " + rawSound,
+                t.getTime(),   // << statt t
+                vol,
+                0
+            )
+
+            lw("[TestSchedule] fixed start id=", idFixed,
+                        "at=", new Date(t.getTime()).toISOString(),
+                        "fixed=", fixedTime,
+                        "vol=", vol)
+
+            return idFixed
+        }
+
+        // ---------- INTERVAL ----------
+        // Start/End als Uhrzeiten (HH:MM) -> heute (oder über Mitternacht)
+        var st = parseHHMM(startTime)
+        var en = parseHHMM(endTime)
+        if (!st || !en) {
+            lw("[TestSchedule] startTime/endTime invalid:", startTime, endTime)
+            return -1
+        }
+
+        var startD = todayAt(st.h, st.m)
+        var endD   = todayAt(en.h, en.m)
+
+        // wenn End <= Start => Intervall geht über Mitternacht
+        if (endD.getTime() <= startD.getTime()) {
+            endD.setDate(endD.getDate() + 1)
+        }
+
+        var sec = parseInt(intervalSec, 10)
+        if (isNaN(sec) || sec < 1) sec = 10
+
+        if (typeof SoundTaskManager.startIntervalSoundTask !== "function") {
+            lw("[TestSchedule] startIntervalSoundTask() not available on SoundTaskManager")
+            return -1
+        }
+
+        var idInt = SoundTaskManager.startIntervalSoundTask(
+            rawSound,
+            "Test: " + rawSound,
+            startD.getTime(),  // << statt startD
+            endD.getTime(),    // << statt endD
+            sec,
+            vol,
+            0
+        )
+
+        lw("[TestSchedule] interval start id=", idInt,
+                    "start=", new Date(startD.getTime()).toISOString(),
+                    "end=", new Date(endD.getTime()).toISOString(),
+                    "intervalSec=", sec,
+                    "vol=", vol)
+
+        return idInt
+    }
+
+    function stopAndroidTestSchedule() {
+        if (_isAndroid() && _hasSoundTaskManagerBridge() && typeof testAlarmId === "number" && testAlarmId > 0) {
+            SoundTaskManager.cancelAlarmTask(testAlarmId)
+            testAlarmId = -1
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // FIX: Dialog Layout + Sound ComboBox (kein TextField mehr -> kein Verschieben)
+    // -------------------------------------------------------------------------
+    Dialog {
+        id: configDialog
+        modal: true
+        closePolicy: Popup.NoAutoClose
+
+        x: (app.width - width) / 2
+        y: Math.max(10, (app.height - height) / 2 - 60)
+        width: Math.min(560, app.width * 0.96)
+
+        title: "Alarm-Testparameter"
+        standardButtons: Dialog.NoButton
+
+        // auf kleinen Screens Label schmaler
+        property int labelW: Math.min(120, Math.floor(width * 0.30))
+
+        // Liste der aktuell gestarteten Test-IDs
+        property var activeTestIds: []
+        property int selectedTestId: -1
+
+        function _applyFromFields() {
+            pSoundName = soundBox.currentText
+
+            pMode = modeBox.currentValue
+            pFixedTime = fixedField.text.trim().length ? fixedField.text.trim() : "12:00"
+            pStartTime = startField.text.trim().length ? startField.text.trim() : "09:00"
+            pEndTime   = endField.text.trim().length   ? endField.text.trim()   : "00:00"
+
+            var v = parseInt(intervalField.text)
+            if (isNaN(v) || v <= 0) v = 10
+            pIntervalSeconds = v
+
+            configured = true
+        }
+
+        function _rebuildSelectedId() {
+            if (idList.currentIndex < 0 || idList.currentIndex >= activeTestIds.length) {
+                selectedTestId = -1
+            } else {
+                selectedTestId = activeTestIds[idList.currentIndex]
+            }
+        }
+
+        function runTest() {
+            _applyFromFields()
+
+            const raw = app.soundRawForName(pSoundName)
+
+            const id = app.startAndroidTestSchedule(
+                raw,
+                pMode,
+                pFixedTime,
+                pStartTime,
+                pEndTime,
+                pIntervalSeconds,
+                app.pVolume01
+            )
+
+            if (typeof id === "number" && id > 0) {
+                if (activeTestIds.indexOf(id) < 0)
+                    activeTestIds = activeTestIds.concat([id])
+
+                // ✅ NICHT automatisch selektieren
+                idList.currentIndex = -1
+                _rebuildSelectedId()
+            } else {
+                idList.currentIndex = -1
+                _rebuildSelectedId()
+            }
+        }
+
+        function stopSelected() {
+            if (selectedTestId <= 0) return
+
+            if (typeof SoundTaskManager !== "undefined" && SoundTaskManager) {
+                if (typeof SoundTaskManager.cancel === "function") {
+                    SoundTaskManager.cancel(selectedTestId)
+                } else if (typeof SoundTaskManager.cancelAlarmTask === "function") {
+                    SoundTaskManager.cancelAlarmTask(selectedTestId)
+                }
+            }
+
+            const idx = activeTestIds.indexOf(selectedTestId)
+            if (idx >= 0) {
+                const copy = activeTestIds.slice(0)
+                copy.splice(idx, 1)
+                activeTestIds = copy
+            }
+
+            idList.currentIndex = -1
+            _rebuildSelectedId()
+        }
+
+        function abortDialog() {
+            configured = true
+            reject()
+        }
+
+        onOpened: {
+            const c = app._canonicalSoundChoice(app.pSoundName)
+            const idx = app.soundChoices.indexOf(c)
+            soundBox.currentIndex = (idx >= 0) ? idx : 0
+
+            idList.currentIndex = -1
+            _rebuildSelectedId()
+        }
+
+        // ✅ FIX: ScrollView + Spacer unten (kein Overlap mit Footer) – ohne ColumnLayout-padding Props (crash!)
+        contentItem: ScrollView {
+            id: dlgScroll
+            anchors.fill: parent
+            clip: true
+
+            Item {
+                width: dlgScroll.availableWidth
+                implicitHeight: contentCol.implicitHeight
+
+                ColumnLayout {
+                    id: contentCol
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 12
+                    spacing: 10
+
+                    Label {
+                        text: ""
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                        height:0
+
+                    }
+
+                    GridLayout {
+                        columns: 2
+                        columnSpacing: 10
+                        rowSpacing: 10
+                        Layout.fillWidth: true
+
+                        Label { text: "Sound:"; Layout.preferredWidth: configDialog.labelW }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
+                            spacing: 8
+
+                            ComboBox {
+                                id: soundBox
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 140
+                                model: app.soundChoices
+
+                                // Android: Padding lieber 0
+                                topPadding: (Qt.platform.os === "android") ? 0 : 6
+                                bottomPadding: (Qt.platform.os === "android") ? 0 : 6
+
+                                Component.onCompleted: {
+                                    const c2 = app._canonicalSoundChoice(app.pSoundName)
+                                    const idx2 = app.soundChoices.indexOf(c2)
+                                    currentIndex = (idx2 >= 0) ? idx2 : 0
+                                }
+                                onActivated: app.pSoundName = currentText
+                            }
+
+                            Button {
+                                text: "▶"
+                                Layout.preferredWidth: 44
+                                Layout.minimumWidth: 44
+                                Layout.preferredHeight: soundBox.implicitHeight
+                                Layout.alignment: Qt.AlignVCenter
+                                onClicked: app.playSoundPreview(soundBox.currentText, 1.0)
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Sound vorhören"
+                            }
+                        }
+
+                        Label { text: "Mode:"; Layout.preferredWidth: configDialog.labelW }
+                        ComboBox {
+                            id: modeBox
+                            Layout.fillWidth: true
+                            model: [
+                                { text: "fixedTime", value: "fixedTime" },
+                                { text: "interval",  value: "interval" }
+                            ]
+                            textRole: "text"
+                            valueRole: "value"
+                            Component.onCompleted: currentIndex = 1
+                        }
+
+                        Label { text: "fixedTime:"; Layout.preferredWidth: configDialog.labelW }
+                        TextField {
+                            id: fixedField
+                            Layout.fillWidth: true
+                            text: pFixedTime
+                            inputMask: "00:00"
+                        }
+
+                        Label { text: "startTime:"; Layout.preferredWidth: configDialog.labelW }
+                        TextField {
+                            id: startField
+                            Layout.fillWidth: true
+                            text: pStartTime
+                            placeholderText: "HH:MM"
+                            inputMethodHints: Qt.ImhDigitsOnly
+                        }
+
+                        Label { text: "endTime:"; Layout.preferredWidth: configDialog.labelW }
+                        TextField {
+                            id: endField
+                            Layout.fillWidth: true
+                            text: pEndTime
+                            placeholderText: "HH:MM"
+                            inputMethodHints: Qt.ImhDigitsOnly
+                        }
+
+                        Label { text: "intervalSeconds:"; Layout.preferredWidth: configDialog.labelW }
+                        TextField {
+                            id: intervalField
+                            Layout.fillWidth: true
+                            text: "" + pIntervalSeconds
+                            inputMethodHints: Qt.ImhDigitsOnly
+                        }
+                    }
+
+                    Frame {
+                        Layout.fillWidth: true
+                        Layout.bottomMargin: 10
+                        padding: 6
+
+                        background: Rectangle {
+                            radius: 6
+                            border.width: 1
+                            border.color: "#6b6b6b"
+                            color: "transparent"
+                        }
+
+                        ListView {
+                            id: idList
+                            clip: true
+                            model: configDialog.activeTestIds
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+
+                            property int rowH: 42
+                            implicitHeight: rowH * 5
+
+                            currentIndex: -1
+                            onCurrentIndexChanged: configDialog._rebuildSelectedId()
+
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                            delegate: Item {
+                                width: idList.width
+                                height: idList.rowH
+
+                                property bool selected: (idList.currentIndex === index)
+
+                                Rectangle {
+                                    z: 0
+                                    anchors.fill: parent
+                                    radius: 8
+                                    border.width: selected ? 2 : 1
+                                    border.color: selected ? "#FFFFFF" : "#6b6b6b"
+                                    color: selected ? "#1E88E5" : "#FFFFFF"
+                                }
+
+                                Rectangle {
+                                    z: 1
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    width: 8
+                                    radius: 8
+                                    visible: selected
+                                    color: "#FFD54F"
+                                }
+
+                                Row {
+                                    z: 2
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 12
+                                    anchors.rightMargin: 12
+                                    spacing: 10
+
+                                    Rectangle {
+                                        width: 28
+                                        height: parent.height
+                                        radius: 6
+                                        color: selected ? "#000000AA" : "transparent"
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: selected ? "✓" : ""
+                                            color: selected ? "#FFD54F" : "transparent"
+                                            font.pixelSize: 18
+                                            font.bold: true
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        height: parent.height
+                                        radius: 6
+                                        color: selected ? "#000000AA" : "transparent"
+                                        width: Math.max(0, parent.width - 28 - parent.spacing)
+
+                                        Text {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            anchors.left: parent.left
+                                            anchors.leftMargin: 8
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: 8
+
+                                            text: "ID: " + modelData
+                                            color: selected ? "#FFD54F" : "#111111"
+                                            font.pixelSize: 16
+                                            font.bold: selected
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: {
+                                        // Toggle: Tap auf selektiertes Item => deselect
+                                        if (idList.currentIndex === index)
+                                            idList.currentIndex = -1
+                                        else
+                                            idList.currentIndex = index
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Label {
+                        text: "Test plant Android-Alarm (Dialog bleibt offen). Abbrechen schließt nur den Dialog."
+                        font.pixelSize: 12
+                        opacity: 0.7
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                    }
+
+                    // ✅ Spacer: damit unten nichts vom Footer überdeckt wird
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: footerBox.implicitHeight + 8
+                    }
+                }
+            }
+        }
+
+        footer: DialogButtonBox {
+            id: footerBox
+            Layout.fillWidth: true
+
+            Button {
+                text: "Test-Start"
+                onClicked: configDialog.runTest()
+            }
+
+            Button {
+                text: "Test-Stop"
+                enabled: (configDialog.selectedTestId > 0)
+                onClicked: configDialog.stopSelected()
+            }
+
+            Button {
+                text: "Abbrechen"
+                onClicked: configDialog.abortDialog()
+            }
+        }
+    }
 
     function updateUiPaused() {
         uiPaused = (Qt.application.state !== Qt.ApplicationActive)
@@ -129,43 +694,40 @@ ApplicationWindow {
             if (id > maxId) maxId = id
         }
         nextAlarmId = maxId + 1
-
-        if (changed)
-            saveNow()
+        if (changed) saveNow()
     }
 
     function _isAndroid() { return Qt.platform.os === "android" }
     function _isAppActive() { return Qt.application.state === Qt.ApplicationActive }
 
-    function _shouldUseAndroidAlarmsNow() {
+    function _shouldUseSoundTaskManagersNow() {
         // We only schedule alarms while app is background/suspended to avoid double triggers.
         return _isAndroid() && actionsRunning && !_isAppActive()
     }
 
-    function _hasAndroidAlarmBridge() {
-        return (typeof AndroidAlarm !== "undefined") && AndroidAlarm
+    function _hasSoundTaskManagerBridge() {
+        return (typeof SoundTaskManager !== "undefined") && SoundTaskManager
     }
 
     function cancelAndroidForIndex(idx) {
-        if (!_isAndroid() || !_hasAndroidAlarmBridge()) return
+        if (!_isAndroid() || !_hasSoundTaskManagerBridge()) return
         if (idx < 0 || idx >= actionModel.count) return
         const o = actionModel.get(idx)
         const id = (typeof o.alarmId === "number") ? o.alarmId : 0
         if (id > 0) {
-            dbg("[AndroidAlarm] cancel idx=", idx, " id=", id)
-            AndroidAlarm.cancel(id)
+            dbg("[SoundTaskManager] cancel idx=", idx, " id=", id)
+            SoundTaskManager.cancel(id)
         }
     }
 
-    function cancelAllAndroidAlarms() {
-        if (!_isAndroid() || !_hasAndroidAlarmBridge()) return
-        for (let i = 0; i < actionModel.count; i++) {
+    function cancelAllSoundTaskManagers() {
+        if (!_isAndroid() || !_hasSoundTaskManagerBridge()) return
+        for (let i = 0; i < actionModel.count; i++)
             cancelAndroidForIndex(i)
-        }
     }
 
     function scheduleAndroidForIndex(idx, nowMs) {
-        if (!_shouldUseAndroidAlarmsNow() || !_hasAndroidAlarmBridge()) return
+        if (!_shouldUseSoundTaskManagersNow() || !_hasSoundTaskManagerBridge()) return
         if (idx < 0 || idx >= actionModel.count) return
 
         const id = ensureAlarmId(idx)
@@ -177,10 +739,10 @@ ApplicationWindow {
 
         const rawSound = soundRawForName(o.sound)
         const title = (typeof o.text === "string" && o.text.length > 0) ? o.text : "Reminder"
-        const text = "" // keep short
+        const text = ""
 
-        dbg("[AndroidAlarm] schedule idx=", idx, " id=", id, " fire=", new Date(fireMs).toISOString(), " mode=", o.mode)
-        AndroidAlarm.scheduleWithParams(
+        dbg("[SoundTaskManager] schedule idx=", idx, " id=", id, " fire=", new Date(fireMs).toISOString(), " mode=", o.mode)
+        SoundTaskManager.scheduleWithParams(
             fireMs,
             rawSound,
             id,
@@ -194,8 +756,8 @@ ApplicationWindow {
         )
     }
 
-    function scheduleAllAndroidAlarms() {
-        if (!_shouldUseAndroidAlarmsNow() || !_hasAndroidAlarmBridge()) return
+    function scheduleAllSoundTaskManagers() {
+        if (!_shouldUseSoundTaskManagersNow() || !_hasSoundTaskManagerBridge()) return
         const nowMs = Date.now()
         for (let i = 0; i < actionModel.count; i++) {
             scheduleForIndex(i, nowMs)
@@ -233,6 +795,7 @@ ApplicationWindow {
         }
         return JSON.stringify(arr)
     }
+
     // NEW: hält ein Element, bis SoundEffect wirklich Ready ist
     property var _pendingSfxItem: null
 
@@ -243,7 +806,6 @@ ApplicationWindow {
         const now = Date.now()
         if ((now - _lastSoundStartMs) < _minSoundGapMs) return
 
-        // Falls noch nichts "pending" ist -> eins holen, aber ggf. erst laden lassen
         if (_pendingSfxItem === null) {
             _pendingSfxItem = _soundQueue.shift()
             desiredPreviewSource = _pendingSfxItem.src
@@ -251,15 +813,13 @@ ApplicationWindow {
 
             if (previewSfx.source !== desiredPreviewSource) {
                 previewSfx.source = desiredPreviewSource
-                return // warten bis Status=Ready
+                return
             }
         }
 
-        // Ab hier: wir haben ein pending Item und Source ist gesetzt
         if (previewSfx.status === SoundEffect.Loading) return
 
         if (previewSfx.status === SoundEffect.Error) {
-            // Requeue + safe reset
             _soundQueue.unshift(_pendingSfxItem)
             _pendingSfxItem = null
             resetPreviewSfx("pump saw SoundEffect.Error")
@@ -339,7 +899,6 @@ ApplicationWindow {
             "soundEnabled": true,
             "volume": 1.0
         })
-
         normalizeAlarmIds()
     }
 
@@ -353,23 +912,19 @@ ApplicationWindow {
         actionModel.setProperty(idx, role, value)
         saveNow()
 
-        // wenn gerade diese Einheit offen ist, nachscrollen
         if (app.expandedIndex === idx) {
             ensureVisibleTimer.kick(idx)
         }
 
-        // wenn Aktionen laufen und zeit-relevante Parameter geändert werden -> neu planen
         if (actionsRunning && (
                 role === "mode" ||
                 role === "startTime" || role === "endTime" || role === "intervalMinutes" ||
                 role === "fixedTime"
             )) {
 
-            // wichtig: alte Planung ungültig machen (sonst bleibt nextFireMs "alt")
             actionModel.setProperty(idx, "nextFireMs", 0)
             actionModel.setProperty(idx, "lastFiredMs", 0)
 
-            // Neu planen (für interval ODER fixed, je nach mode)
             Qt.callLater(function() {
                 const nowMs = Date.now()
                 scheduleForIndex(idx, nowMs)
@@ -377,7 +932,6 @@ ApplicationWindow {
             })
         }
 
-        // Android notification: update scheduled alarm when sound or soundEnabled changes while backgrounded
         if (actionsRunning && (role === "sound" || role === "soundEnabled")) {
             Qt.callLater(function() {
                 if (role === "soundEnabled" && value === false) {
@@ -434,12 +988,18 @@ ApplicationWindow {
             saveNow()
         }
 
-        // ensure stable alarm ids even if old state didn't have them
         normalizeAlarmIds()
 
-        // Aktionen NICHT automatisch starten
         actionsRunning = false
         stopActions()
+        SoundTaskManager.ensure()
+        // statt configDialog.open()
+        Qt.callLater(function() {
+            Qt.callLater(function() {
+                configDialog.open()
+                configDialog.forceActiveFocus()
+            })
+        })
     }
 
     onClosing: function(close) {
@@ -486,14 +1046,11 @@ ApplicationWindow {
         property string reason: ""
 
         onTriggered: {
-            // Wenn noch irgendwas spielt: erst stoppen, dann nächsten Tick nochmal versuchen
             if (previewSfx.playing) {
                 previewSfx.stop()
                 sfxSafeReset.restart()
                 return
             }
-
-            // Source sauber "neu laden"
             const src = app.desiredPreviewSource
             previewSfx.source = ""
             Qt.callLater(function() { previewSfx.source = src })
@@ -501,8 +1058,7 @@ ApplicationWindow {
     }
 
     function resetPreviewSfx(reason) {
-        console.log("[Main:SFX] resetPreviewSfx reason=", reason)
-        // optional: pending verwerfen, damit nichts auf einem kaputten Stream hängt
+        lw("[Main:SFX] resetPreviewSfx reason=", reason)
         _pendingSfxItem = null
         sfxSafeReset.reason = reason
         sfxSafeReset.restart()
@@ -536,15 +1092,11 @@ ApplicationWindow {
     }
 
     function playSoundPreview(soundName, vol) {
-        // Preview priorisiert, wird aber trotzdem seriell abgespielt
         enqueueSound(soundName, vol, true)
     }
 
-
     // =========================================================
-    // Scheduler: Intervall (Minuten)
-    // Runtime roles im Model:
-    //   nextFireMs, lastFiredMs, nextInMinutes
+    // Scheduler
     // =========================================================
     Timer {
         id: intervalScheduler
@@ -561,13 +1113,11 @@ ApplicationWindow {
         schedulerInit()
         intervalScheduler.restart()
 
-        // Android: if app is already in background when starting, arm alarms immediately.
-        // If app is foreground, ensure stale alarms are canceled to avoid double triggers.
         if (_isAndroid()) {
             if (_isAppActive())
-                cancelAllAndroidAlarms()
+                cancelAllSoundTaskManagers()
             else
-                scheduleAllAndroidAlarms()
+                scheduleAllSoundTaskManagers()
         }
     }
 
@@ -576,11 +1126,9 @@ ApplicationWindow {
         actionsRunning = false
         intervalScheduler.stop()
 
-        // Android: cancel all pending alarms when stopping
         if (_isAndroid())
-            cancelAllAndroidAlarms()
+            cancelAllSoundTaskManagers()
 
-        // runtime anzeigen reset
         for (let i = 0; i < actionModel.count; i++) {
             actionModel.setProperty(i, "nextInMinutes", -1)
             actionModel.setProperty(i, "nextInSeconds", -1)
@@ -594,64 +1142,27 @@ ApplicationWindow {
         }
     }
 
-    // When the app goes to background, Qt timers may pause (especially on Huawei/EMUI).
-    // We therefore arm Android AlarmManager notifications while backgrounded.
     Connections {
         target: Qt.application
         function onStateChanged(state) {
             if (!_isAndroid() || !actionsRunning) return
-
+            /* Android
             if (_isAppActive()) {
-                dbg("[AndroidAlarm] app active -> cancel all")
-                cancelAllAndroidAlarms()
-
-                // Refresh countdown immediately when coming back
+                dbg("[SoundTaskManager] app active -> cancel all")
+                cancelAllSoundTaskManagers()
                 schedulerInit()
             } else {
-                dbg("[AndroidAlarm] app background -> schedule all")
-                scheduleAllAndroidAlarms()
+                dbg("[SoundTaskManager] app background -> schedule all")
+                scheduleAllSoundTaskManagers()
             }
+            */
         }
-    }
-
-
-    // Setzt nextInMinutes / nextInSeconds konsistent:
-    // - >= 60s: nur volle Minuten (floor), nextInSeconds = -1
-    // - < 60s : nextInMinutes = 0, nextInSeconds = 0..59 (floor, clamp)
-    function _setCountdown(index, targetMs, nowMs) {
-        if (!targetMs || isNaN(targetMs) || targetMs <= 0) {
-            actionModel.setProperty(index, "nextInMinutes", -1)
-            actionModel.setProperty(index, "nextInSeconds", -1)
-            return
-        }
-
-        const msLeft = targetMs - nowMs
-
-        if (msLeft <= 0) {
-            actionModel.setProperty(index, "nextInMinutes", 0)
-            actionModel.setProperty(index, "nextInSeconds", 0)
-            return
-        }
-
-        if (msLeft <= 60000) {
-            // <= 1 Minute: mm:ss (inkl. 01:00)
-            const secsTotal = Math.min(60, Math.max(0, Math.ceil(msLeft / 1000.0))) // 60..0
-            actionModel.setProperty(index, "nextInMinutes", 0)     // egal, UI nimmt seconds zuerst
-            actionModel.setProperty(index, "nextInSeconds", secsTotal)
-            return
-        }
-
-        // > 1 Minute: Minuten aufrunden (2 Min bis 1:00)
-        const mins = Math.max(1, Math.ceil(msLeft / 60000.0))
-        actionModel.setProperty(index, "nextInMinutes", mins)
-        actionModel.setProperty(index, "nextInSeconds", -1)
     }
 
     function computeNextFixedFireMs(nowMs, fixedTime) {
         const now = new Date(nowMs)
         const tMin = parseHHMMToMinutes(fixedTime || "00:00")
         let target = dateAtMinutes(now, tMin)
-        // wenn Uhrzeit heute schon vorbei -> morgen
         if (now.getTime() >= target.getTime())
             target.setDate(target.getDate() + 1)
         return target.getTime()
@@ -667,7 +1178,6 @@ ApplicationWindow {
         actionModel.setProperty(i, "nextFixedS", -1)
     }
 
-    // Intervall: >60s => Minuten (ceil), <=60s => mm:ss (Sekunden gesamt 60..0)
     function _setIntervalCountdown(i, targetMs, nowMs) {
         _clearFixedCountdown(i)
 
@@ -679,7 +1189,7 @@ ApplicationWindow {
         }
 
         if (msLeft <= 60000) {
-            const secsTotal = Math.max(0, Math.floor(msLeft / 1000.0))  // 60..0
+            const secsTotal = Math.max(0, Math.floor(msLeft / 1000.0))
             actionModel.setProperty(i, "nextInMinutes", -1)
             actionModel.setProperty(i, "nextInSeconds", secsTotal)
             return
@@ -690,7 +1200,6 @@ ApplicationWindow {
         actionModel.setProperty(i, "nextInSeconds", -1)
     }
 
-    // Fixed: >60s => hh:mm (Minuten aufrunden), <=60s => hh:mm:ss
     function _setFixedCountdown(i, targetMs, nowMs) {
         _clearIntervalCountdown(i)
 
@@ -703,7 +1212,7 @@ ApplicationWindow {
         }
 
         if (msLeft <= 60000) {
-            const totalSec = Math.max(0, Math.floor(msLeft / 1000.0)) // 60..0
+            const totalSec = Math.max(0, Math.floor(msLeft / 1000.0))
             const h = Math.floor(totalSec / 3600)
             const m = Math.floor((totalSec % 3600) / 60)
             const s = totalSec % 60
@@ -775,9 +1284,8 @@ ApplicationWindow {
 
     function schedulerInit() {
         const nowMs = Date.now()
-        for (let i = 0; i < actionModel.count; i++) {
+        for (let i = 0; i < actionModel.count; i++)
             scheduleForIndex(i, nowMs)
-        }
         schedulerStep()
     }
 
@@ -822,7 +1330,7 @@ ApplicationWindow {
                     _setIntervalCountdown(i, next2, baseNow)
                 }
 
-            } else { // FIXED
+            } else {
                 let nextMsF = parseInt(o.nextFireMs || 0)
                 if (!nextMsF || isNaN(nextMsF) || nextMsF <= 0) {
                     nextMsF = computeNextFixedFireMs(nowMs, o.fixedTime || "00:00")
@@ -842,7 +1350,7 @@ ApplicationWindow {
                     }
 
                     const baseNowF = nowMs + 1000
-                    const next2F = computeNextFixedFireMs(baseNowF, o.fixedTime || "00:00") // -> morgen
+                    const next2F = computeNextFixedFireMs(baseNowF, o.fixedTime || "00:00")
                     actionModel.setProperty(i, "nextFireMs", next2F)
                     _setFixedCountdown(i, next2F, baseNowF)
                 }
@@ -882,20 +1390,15 @@ ApplicationWindow {
         let start = dateAtMinutes(now, startMin)
         let end = dateAtMinutes(now, endMin)
 
-        // start==end => ganzer Tag (bis morgen)
         if (endMin === startMin) {
             end.setDate(end.getDate() + 1)
         } else if (endMin < startMin) {
-            // über Mitternacht
             end.setDate(end.getDate() + 1)
         }
 
-        // vor Start -> Start ist nächste Auslösung
-        if (now.getTime() < start.getTime()) {
+        if (now.getTime() < start.getTime())
             return start.getTime()
-        }
 
-        // nach Ende -> nächster Tag Start
         if (now.getTime() >= end.getTime()) {
             start.setDate(start.getDate() + 1)
             return start.getTime()
@@ -1013,7 +1516,7 @@ ApplicationWindow {
     }
 
     // -------------------------
-    // Auto-scroll (damit + nicht über Editbereich hängt)
+    // Auto-scroll
     // -------------------------
     function ensureIndexVisible(idx) {
         if (idx < 0) return
@@ -1104,7 +1607,6 @@ ApplicationWindow {
                 endTime: model.endTime
                 intervalMinutes: model.intervalMinutes
 
-                // Countdown für Anzeige (in X Min)
                 nextInMinutes: (app.actionsRunning && typeof model.nextInMinutes === "number") ? model.nextInMinutes : -1
                 nextInSeconds: (app.actionsRunning && typeof model.nextInSeconds === "number") ? model.nextInSeconds : -1
 
@@ -1117,10 +1619,7 @@ ApplicationWindow {
                 volume: model.volume
                 onVolumeEdited: function(v) { app.setRole(index, "volume", v) }
 
-                // Liste der Sounds für den Dialog
                 soundChoices: app.soundChoices
-
-                // Preview spielt gewählten Sound (über Queue)
                 onPreviewSoundRequested: function(name) { app.playSoundPreview(name, delegateRoot.volume) }
 
                 onToggleRequested: function(idx) {
@@ -1141,7 +1640,6 @@ ApplicationWindow {
                 onDeleteRequested: function(idx) {
                     if (idx < 0 || idx >= actionModel.count) return
 
-                    // Cancel any pending Android alarm for this action (stable alarmId)
                     cancelAndroidForIndex(idx)
 
                     if (app.expandedIndex === idx)
@@ -1152,11 +1650,10 @@ ApplicationWindow {
                     actionModel.remove(idx, 1)
                     saveNow()
 
-                    // Re-initialize timers / alarms after deletion
                     if (actionsRunning) {
                         schedulerInit()
-                        if (_shouldUseAndroidAlarmsNow())
-                            scheduleAllAndroidAlarms()
+                        if (_shouldUseSoundTaskManagersNow())
+                            scheduleAllSoundTaskManagers()
                     }
                 }
             }

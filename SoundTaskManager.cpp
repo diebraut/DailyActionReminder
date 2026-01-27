@@ -1,0 +1,392 @@
+#include "SoundTaskManager.h"
+
+#include <QTimer>
+#include <QMutexLocker>
+#include <limits>
+#include <QtGlobal>
+#include <algorithm>
+
+#ifdef Q_OS_ANDROID
+#include <android/log.h>
+#include <QJniObject>
+#include <QJniEnvironment>
+#include <cstdarg>
+#endif
+
+SoundTaskManager::SoundTaskManager(QObject *parent) : QObject(parent) {}
+
+bool SoundTaskManager::isAndroid() const
+{
+#ifdef Q_OS_ANDROID
+    return true;
+#else
+    return false;
+#endif
+}
+
+#ifdef Q_OS_ANDROID
+static void alogW(const char* fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    __android_log_vprint(ANDROID_LOG_WARN, "DailyActionReminder", fmt, ap);
+    va_end(ap);
+}
+
+static QJniObject getQtActivity()
+{
+    return QJniObject::callStaticObjectMethod(
+        "org/qtproject/qt/android/QtNative",
+        "activity",
+        "()Landroid/app/Activity;"
+    );
+}
+
+static bool clearJniException(const char *where)
+{
+    QJniEnvironment env;
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        alogW("JNI EXCEPTION at %s", where);
+        return false;
+    }
+    return true;
+}
+#endif
+
+void SoundTaskManager::ensure()
+{
+    if (!isAndroid()) {
+        emit logLine("ensure(): not Android");
+        return;
+    }
+
+#ifdef Q_OS_ANDROID
+    QJniObject activity = getQtActivity();
+    if (!activity.isValid()) {
+        emit logLine("ensure(): QtNative.activity() invalid");
+        return;
+    }
+
+    alogW("JNI: calling AlarmScheduler.ensureNotificationPermission(Activity)");
+
+    QJniObject::callStaticMethod<void>(
+        "org/dailyactions/AlarmScheduler",
+        "ensureNotificationPermission",
+        "(Landroid/app/Activity;)V",
+        activity.object<jobject>()
+    );
+
+    const bool ok = clearJniException("ensureNotificationPermission");
+    emit logLine(ok ? "ensure(): OK" : "ensure(): EXCEPTION");
+#else
+    emit logLine("ensure(): not Android build");
+#endif
+}
+
+// -------------------- ID management --------------------
+
+int SoundTaskManager::allocId_locked()
+{
+    if (!m_freeIds.isEmpty()) {
+        auto it = m_freeIds.begin();
+        const int id = *it;
+        m_freeIds.erase(it);
+        m_activeIds.insert(id);
+        return id;
+    }
+    const int id = m_nextId++;
+    m_activeIds.insert(id);
+    return id;
+}
+
+void SoundTaskManager::freeId_locked(int id)
+{
+    if (id <= 0) return;
+
+    m_activeIds.remove(id);
+    m_intervalIds.remove(id);
+
+    if (auto it = m_autoFreeTimers.find(id); it != m_autoFreeTimers.end()) {
+        QTimer *t = it.value();
+        m_autoFreeTimers.erase(it);
+        if (t) {
+            t->stop();
+            t->deleteLater();
+        }
+    }
+
+    m_freeIds.insert(id);
+}
+
+int SoundTaskManager::allocId()
+{
+    QMutexLocker lk(&m_mutex);
+    return allocId_locked();
+}
+
+void SoundTaskManager::freeId(int id)
+{
+    QMutexLocker lk(&m_mutex);
+    freeId_locked(id);
+}
+
+void SoundTaskManager::armAutoFreeFixed(int id, qint64 fixedTimeMs)
+{
+    // Fixed: nach Trigger + 60s Puffer freigeben (falls nicht explizit gecancelt)
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    qint64 delayMs = fixedTimeMs - now;
+    if (delayMs < 0) delayMs = 0;
+    delayMs += 60000;
+
+    QTimer *t = new QTimer(this);
+    t->setSingleShot(true);
+
+    {
+        QMutexLocker lk(&m_mutex);
+        // falls bereits ein Timer existiert: ersetzen
+        if (auto it = m_autoFreeTimers.find(id); it != m_autoFreeTimers.end()) {
+            if (it.value()) {
+                it.value()->stop();
+                it.value()->deleteLater();
+            }
+            m_autoFreeTimers.erase(it);
+        }
+        m_autoFreeTimers.insert(id, t);
+    }
+
+    connect(t, &QTimer::timeout, this, [this, id]() {
+        // Nicht canceln, nur ID freigeben – Alarm ist ohnehin abgelaufen.
+        freeId(id);
+        emit logLine(QString("autoFreeFixed(): freed id=%1").arg(id));
+    });
+
+    t->start(static_cast<int>(std::min<qint64>(delayMs, std::numeric_limits<int>::max())));
+}
+
+// -------------------- Scheduling wrappers --------------------
+
+
+bool SoundTaskManager::schedule(qint64 triggerAtMillis,
+                               const QString &soundName,
+                               int requestId,
+                               const QString &title,
+                               const QString &text,
+                               const QString &mode,
+                               const QString &fixedTime,
+                               const QString &startTime,
+                               const QString &endTime,
+                               int intervalSeconds,
+                               float volume01)
+{
+    return scheduleWithParams(triggerAtMillis, soundName, requestId, title, text,
+                             mode, fixedTime, startTime, endTime, intervalSeconds, volume01);
+}
+
+bool SoundTaskManager::scheduleWithParams(qint64 triggerAtMillis,
+                                         const QString &soundName,
+                                         int requestId,
+                                         const QString &title,
+                                         const QString &text,
+                                         const QString &mode,
+                                         const QString &fixedTime,
+                                         const QString &startTime,
+                                         const QString &endTime,
+                                         int intervalSeconds,
+                                         float volume01)
+{
+    if (!isAndroid()) {
+        emit logLine("scheduleWithParams(): not Android");
+        return false;
+    }
+
+#ifdef Q_OS_ANDROID
+    QJniObject activity = getQtActivity();
+    if (!activity.isValid()) {
+        emit logLine("scheduleWithParams(): QtNative.activity() invalid");
+        return false;
+    }
+
+    const float v = std::max(0.0f, std::min(1.0f, volume01));
+
+    const char *sig =
+        "(Landroid/content/Context;JLjava/lang/String;ILjava/lang/String;Ljava/lang/String;"
+        "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IF)V";
+
+    // Strings
+    QJniObject jSound = QJniObject::fromString(soundName);
+    QJniObject jTitle = QJniObject::fromString(title);
+    QJniObject jText  = QJniObject::fromString(text);
+    QJniObject jMode  = QJniObject::fromString(mode);
+    QJniObject jFixed = QJniObject::fromString(fixedTime);
+    QJniObject jStart = QJniObject::fromString(startTime);
+    QJniObject jEnd   = QJniObject::fromString(endTime);
+
+    alogW("SoundTaskManager.scheduleWithParams id=%d at=%lld inMs=%lld mode=%s sound=%s vol=%.2f fixed=%s start=%s end=%s intervalSec=%d",
+          requestId,
+          (long long)triggerAtMillis,
+          (long long)(triggerAtMillis - QDateTime::currentMSecsSinceEpoch()),
+          mode.toUtf8().constData(),
+          soundName.toUtf8().constData(),
+          v,
+          fixedTime.toUtf8().constData(),
+          startTime.toUtf8().constData(),
+          endTime.toUtf8().constData(),
+          intervalSeconds);
+
+    QJniObject::callStaticMethod<void>(
+        "org/dailyactions/AlarmScheduler",
+        "scheduleWithParams",
+        sig,
+        activity.object<jobject>(),
+        (jlong)triggerAtMillis,
+        jSound.object<jstring>(),
+        (jint)requestId,
+        jTitle.object<jstring>(),
+        jText.object<jstring>(),
+        jMode.object<jstring>(),
+        jFixed.object<jstring>(),
+        jStart.object<jstring>(),
+        jEnd.object<jstring>(),
+        (jint)intervalSeconds,
+        (jfloat)v
+    );
+
+    const bool ok = clearJniException("scheduleWithParams");
+    emit logLine(ok ? "scheduleWithParams(): OK" : "scheduleWithParams(): EXCEPTION");
+    return ok;
+#else
+    emit logLine("scheduleWithParams(): not Android build");
+    return false;
+#endif
+}
+
+bool SoundTaskManager::cancel(int requestId)
+{
+    if (!isAndroid()) {
+        emit logLine("cancel(): not Android");
+        return false;
+    }
+
+#ifdef Q_OS_ANDROID
+    QJniObject activity = getQtActivity();
+    if (!activity.isValid()) {
+        emit logLine("cancel(): QtNative.activity() invalid");
+        return false;
+    }
+
+    QJniObject::callStaticMethod<void>(
+        "org/dailyactions/AlarmScheduler",
+        "cancel",
+        "(Landroid/content/Context;I)V",
+        activity.object<jobject>(),
+        (jint)requestId
+    );
+
+    const bool ok = clearJniException("cancel");
+    emit logLine(ok ? "cancel(): OK" : "cancel(): EXCEPTION");
+    return ok;
+#else
+    emit logLine("cancel(): not Android build");
+    return false;
+#endif
+}
+
+// -------------------- New API --------------------
+
+int SoundTaskManager::startFixedSoundTask(const QString &rawSound,
+                                         const QString &notificationTxt,
+                                         qint64 fixedTimeMs,
+                                         float volume01,
+                                         int /*soundDurationSec*/)
+{
+    const int id = allocId();
+
+    // fixedTime string (HH:mm) für Logging/Extras
+    const QDateTime dt = QDateTime::fromMSecsSinceEpoch(fixedTimeMs);
+    const QString fixedStr = dt.time().toString("HH:mm");
+
+    const bool ok = scheduleWithParams(
+        fixedTimeMs,
+        rawSound,
+        id,
+        "DailyActions",
+        notificationTxt,
+        "fixedTime",
+        fixedStr,
+        "",
+        "",
+        0,
+        volume01
+    );
+
+    if (!ok) {
+        freeId(id);
+        return -1;
+    }
+
+    armAutoFreeFixed(id, fixedTimeMs);
+    return id;
+}
+
+int SoundTaskManager::startIntervalSoundTask(const QString &rawSound,
+                                            const QString &notificationTxt,
+                                            qint64 startTimeMs,
+                                            qint64 endTimeMs,
+                                            int intervalSecs,
+                                            float volume01,
+                                            int /*soundDurationSec*/)
+{
+    if (intervalSecs <= 0) return -1;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    qint64 firstAt = startTimeMs > 0 ? startTimeMs : (now + 250);
+    if (firstAt < now + 250) firstAt = now + 250;
+
+    if (endTimeMs > 0 && firstAt >= endTimeMs) {
+        return -1;
+    }
+
+    const int id = allocId();
+
+    const QString startStr = (startTimeMs > 0)
+        ? QDateTime::fromMSecsSinceEpoch(startTimeMs).time().toString("HH:mm")
+        : "";
+    const QString endStr = (endTimeMs > 0)
+        ? QDateTime::fromMSecsSinceEpoch(endTimeMs).time().toString("HH:mm")
+        : "";
+
+    const bool ok = scheduleWithParams(
+        firstAt,
+        rawSound,
+        id,
+        "DailyActions",
+        notificationTxt,
+        "interval",
+        "00:00",
+        startStr,
+        endStr,
+        intervalSecs,
+        volume01
+    );
+
+    if (!ok) {
+        freeId(id);
+        return -1;
+    }
+
+    {
+        QMutexLocker lk(&m_mutex);
+        m_intervalIds.insert(id);
+    }
+
+    return id;
+}
+
+void SoundTaskManager::cancelAlarmTask(int alarmId)
+{
+    if (alarmId <= 0) return;
+    cancel(alarmId);
+    freeId(alarmId);
+}
