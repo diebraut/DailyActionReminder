@@ -5,6 +5,7 @@
 #include <QQuickWindow>
 #include <QTimer>
 #include <QDateTime>
+#include <QDebug>
 
 #ifdef Q_OS_ANDROID
 #include <android/log.h>
@@ -13,15 +14,14 @@
 #endif
 
 #include "appstorage.h"
-#include "SoundTaskManager.h"
 #include <cstdio>
-#include <cstdarg>
 
 #include <QDir>
 #include <QStandardPaths>
 
 #include "logqml.h"
 
+#include "soundtaskmanager.h"
 
 static QtMessageHandler g_prevHandler = nullptr;
 
@@ -120,8 +120,12 @@ int main(int argc, char *argv[])
                              qWarning().noquote() << w.toString();
                      });
 
-    qmlRegisterSingletonType<SoundTaskManager>("DailyActions", 1, 0, "SoundTaskManager",
-                                               [](QQmlEngine*, QJSEngine*) -> QObject* { return new SoundTaskManager; });
+    qmlRegisterSingletonType<SoundTaskManager>(
+        "DailyActions", 1, 0, "SoundTaskManager",
+        [](QQmlEngine*, QJSEngine*) -> QObject* {
+            return new SoundTaskManager();
+        }
+        );
 
     engine.rootContext()->setContextProperty("Storage", &storage);
     engine.rootContext()->setContextProperty("Log", log);
@@ -130,7 +134,8 @@ int main(int argc, char *argv[])
     // 3) Harter Check: wenn Main.qml nicht geladen werden kann
     //    (Parse/Import Fehler), sofort sichtbar + Exit-Code
     // ------------------------------------------------------------
-    const QUrl url(QStringLiteral("qrc:/Main.qml")); // ggf. anpassen!
+    const QUrl url(QStringLiteral("qrc:/qt/qml/DailyActionReminder/Main.qml"));
+
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreated,
                      &app,
                      [url](QObject *obj, const QUrl &objUrl) {
@@ -140,7 +145,7 @@ int main(int argc, char *argv[])
                          }
                      }, Qt::QueuedConnection);
 
-    engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+    engine.load(QUrl(QStringLiteral("qrc:/qt/qml/DailyActionReminder/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return -1;
 

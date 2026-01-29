@@ -1,25 +1,8 @@
 #pragma once
 
 #include <QObject>
-#include <QDateTime>
-#include <QHash>
-#include <QSet>
-#include <QMutex>
+#include "i_soundtaskmanager.h"
 
-class QTimer;
-
-/**
- * SoundTaskManager
- * - Vergibt eindeutige Alarm-IDs
- * - Plant Android Alarme über org.dailyactions.AlarmScheduler (JNI)
- * - Kann mehrere parallel laufende Sound-Tasks verwalten (unterschiedliche alarmId)
- *
- * Hinweis:
- * - soundDurationSec ist aktuell nur vorgesehen (noch nicht implementiert).
- * - FixedTasks werden nach Ausführung nicht automatisch vom Java-Code zurückgemeldet.
- *   Deshalb wird die ID bei FixedTasks nach Ablauf von fixedTime (+60s Puffer) automatisch freigegeben,
- *   sofern nicht vorher cancelAlarmTask() aufgerufen wurde.
- */
 class SoundTaskManager : public QObject
 {
     Q_OBJECT
@@ -27,11 +10,8 @@ public:
     explicit SoundTaskManager(QObject *parent = nullptr);
 
     Q_INVOKABLE bool isAndroid() const;
-
-    // Optional: Notification Permission / Setup
     Q_INVOKABLE void ensure();
 
-    // Neue API (wie gewünscht)
     Q_INVOKABLE int startFixedSoundTask(const QString &rawSound,
                                         const QString &notificationTxt,
                                         qint64 fixedTimeMs,
@@ -48,7 +28,6 @@ public:
 
     Q_INVOKABLE void cancelAlarmTask(int alarmId);
 
-    // Backward-Compat für bestehende QML-Calls (ersetzt AndroidAlarmBridge)
     Q_INVOKABLE bool schedule(qint64 triggerAtMillis,
                               const QString &soundName,
                               int requestId,
@@ -79,19 +58,5 @@ signals:
     void logLine(const QString &line);
 
 private:
-    int allocId_locked();
-    void freeId_locked(int id);
-
-    int allocId();
-    void freeId(int id);
-
-    void armAutoFreeFixed(int id, qint64 fixedTimeMs);
-
-private:
-    mutable QMutex m_mutex;
-    int m_nextId = 777001;
-    QSet<int> m_freeIds;
-    QSet<int> m_activeIds;
-    QSet<int> m_intervalIds;
-    QHash<int, QTimer*> m_autoFreeTimers;
+    ISoundTaskManager *m_impl = nullptr; // gehört diesem QObject (parented)
 };

@@ -39,6 +39,22 @@ public class AlarmReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         final PendingResult pr = goAsync();
 
+        int id = intent.getIntExtra(AlarmScheduler.EXTRA_REQUEST_ID,
+                intent.getIntExtra(AlarmScheduler.EXTRA_NOTIF_ID, -1));
+
+        String mode = intent.getStringExtra(AlarmScheduler.EXTRA_MODE);
+        String fixed = intent.getStringExtra(AlarmScheduler.EXTRA_FIXED_TIME);
+
+        Log.w("AlarmReceiver",
+              "ONRECEIVE id=" + id +
+              " action=" + intent.getAction() +
+              " mode=" + mode +
+              " fixed=" + fixed +
+              " now=" + new java.util.Date(System.currentTimeMillis()));
+        Log.w("AlarmReceiver",
+              "nowMs=" + System.currentTimeMillis() +
+              " now=" + new java.util.Date(System.currentTimeMillis()));
+
         try {
             if (context == null || intent == null) {
                 Log.e(TAG, "onReceive: context or intent is NULL");

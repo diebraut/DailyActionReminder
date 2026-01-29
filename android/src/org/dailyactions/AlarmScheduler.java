@@ -96,9 +96,10 @@ public class AlarmScheduler {
             logW("scheduleWithParams: ctx == null -> abort");
             return;
         }
+        final long now = System.currentTimeMillis();
+        logI("NOW=" + new java.util.Date(now) + " TRIGGER=" + new java.util.Date(triggerAtMillis));
 
         final float v = clamp01(volume01);
-        final long now = System.currentTimeMillis();
         final long inMs = triggerAtMillis - now;
 
         logI("SCHEDULE id=" + requestId
