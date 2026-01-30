@@ -4,7 +4,7 @@
 #ifdef Q_OS_ANDROID
 #include "soundtaskmanagerandroid.h"
 #else
-#include "SoundTaskManagerDummy.h"
+#include "soundtaskmanagerdesktop.h"
 #endif
 
 ISoundTaskManager* SoundTaskManagerFactory::create(QObject *parent)
@@ -12,6 +12,6 @@ ISoundTaskManager* SoundTaskManagerFactory::create(QObject *parent)
 #ifdef Q_OS_ANDROID
     return new SoundTaskManagerAndroid(parent);
 #else
-    return new SoundTaskManagerDummy(parent);
+    return new SoundTaskManagerDesktop(parent);
 #endif
 }

@@ -16,7 +16,7 @@ ApplicationWindow {
     // -------------------------
     // Debug
     // -------------------------
-    property bool dbgEnabled: false
+    property bool dbgEnabled: true
     function lw(){if(typeof Log==='undefined'||!Log||typeof Log.w!=='function')return;Log.w(Array.prototype.join.call(arguments,' '))}
 
     function dbg(){if(!dbgEnabled)return;lw.apply(null,arguments)}
@@ -63,12 +63,6 @@ ApplicationWindow {
         target: (typeof SoundTaskManager !== "undefined") ? SoundTaskManager : null
         function onLogLine(s) { lw("[SoundTaskManager]", s) }
     }
-
-    Connections {
-        target: alarmModel
-        function onCountChanged() { lw("[alarmModel] countChanged:", alarmModel.count) }
-    }
-
 
     function updateUiPaused() {
         uiPaused = (Qt.application.state !== Qt.ApplicationActive)
@@ -143,21 +137,19 @@ ApplicationWindow {
         nextAlarmId = maxId + 1
         if (changed) saveNow()
     }
-
-    function _isAndroid() { return Qt.platform.os === "android" }
     function _isAppActive() { return Qt.application.state === Qt.ApplicationActive }
 
     function _shouldUseSoundTaskManagersNow() {
-        // We only schedule alarms while app is background/suspended to avoid double triggers.
-        return _isAndroid() && actionsRunning && !_isAppActive()
+        // Plattform-unabhängig: Scheduling wird vom SoundTaskManager entschieden.
+        return actionsRunning
     }
 
     function _hasSoundTaskManagerBridge() {
         return (typeof SoundTaskManager !== "undefined") && SoundTaskManager
     }
 
-    function cancelAndroidForIndex(idx) {
-        if (!_isAndroid() || !_hasSoundTaskManagerBridge()) return
+    function cancelTaskManagerForIndex(idx) {
+        if (!_hasSoundTaskManagerBridge()) return
         if (idx < 0 || idx >= actionModel.count) return
         const o = actionModel.get(idx)
         const id = (typeof o.alarmId === "number") ? o.alarmId : 0
@@ -168,13 +160,13 @@ ApplicationWindow {
     }
 
     function cancelAllSoundTaskManagers() {
-        if (!_isAndroid() || !_hasSoundTaskManagerBridge()) return
+        if (!_hasSoundTaskManagerBridge()) return
         for (let i = 0; i < actionModel.count; i++)
-            cancelAndroidForIndex(i)
+            cancelTaskManagerForIndex(i)
     }
 
-    function scheduleAndroidForIndex(idx, nowMs) {
-        if (!_shouldUseSoundTaskManagersNow() || !_hasSoundTaskManagerBridge()) return
+    function scheduleTaskManagerForIndex(idx, nowMs) {
+        if (!_hasSoundTaskManagerBridge()) return
         if (idx < 0 || idx >= actionModel.count) return
 
         const id = ensureAlarmId(idx)
@@ -188,7 +180,11 @@ ApplicationWindow {
         const title = (typeof o.text === "string" && o.text.length > 0) ? o.text : "Reminder"
         const text = ""
 
-        dbg("[SoundTaskManager] schedule idx=", idx, " id=", id, " fire=", new Date(fireMs).toISOString(), " mode=", o.mode)
+        const enabled = (o.soundEnabled === undefined) ? true : !!o.soundEnabled
+        const baseVol = (typeof o.volume === "number" && !isNaN(o.volume)) ? o.volume : 1.0
+        const effectiveVol = (!app.allSoundsDisabled && enabled) ? Math.max(0.0, Math.min(1.0, baseVol)) : 0.0
+
+        dbg("[SoundTaskManager] schedule idx=", idx, " id=", id, " fire=", new Date(fireMs).toISOString(), " mode=", o.mode, " enabled=", enabled, " vol=", effectiveVol)
         SoundTaskManager.scheduleWithParams(
             fireMs,
             rawSound,
@@ -199,16 +195,17 @@ ApplicationWindow {
             (o.fixedTime || "00:00"),
             (o.startTime || ""),
             (o.endTime || ""),
-            (typeof o.intervalMinutes === "number" ? o.intervalMinutes : parseInt(o.intervalMinutes || 0))
+            ((typeof o.intervalMinutes === "number" ? o.intervalMinutes : parseInt(o.intervalMinutes || 0)) * 60),
+            effectiveVol
         )
     }
 
     function scheduleAllSoundTaskManagers() {
-        if (!_shouldUseSoundTaskManagersNow() || !_hasSoundTaskManagerBridge()) return
+        if (!_hasSoundTaskManagerBridge()) return
         const nowMs = Date.now()
         for (let i = 0; i < actionModel.count; i++) {
-            scheduleForIndex(i, nowMs)
-            scheduleAndroidForIndex(i, nowMs)
+            scheduleForIndex(i, nowMs) // UI countdown only
+            scheduleTaskManagerForIndex(i, nowMs) // real scheduling
         }
     }
 
@@ -375,19 +372,26 @@ ApplicationWindow {
             Qt.callLater(function() {
                 const nowMs = Date.now()
                 scheduleForIndex(idx, nowMs)
-                scheduleAndroidForIndex(idx, nowMs)
+                scheduleTaskManagerForIndex(idx, nowMs)
             })
         }
-
-        if (actionsRunning && (role === "sound" || role === "soundEnabled")) {
+        if (actionsRunning && (role === "sound" || role === "soundEnabled" || role === "volume")) {
+            dbg("[main] sound changed", "role=", role)
             Qt.callLater(function() {
-                if (role === "soundEnabled" && value === false) {
-                    cancelAndroidForIndex(idx)
-                    return
-                }
+                // immer: alten Task weg
+                dbg("[main] sound changed cancel", "role=", role)
+                cancelTaskManagerForIndex(idx)
+
                 const nowMs = Date.now()
+
+                // UI-Next/Countdown ggf. aktualisieren wie vorher (unverändert)
+                dbg("[main] sound changed scheduleForIndex", "role=", role)
                 scheduleForIndex(idx, nowMs)
-                scheduleAndroidForIndex(idx, nowMs)
+
+                // immer neu planen – auch wenn soundEnabled=false oder volume=0,
+                // damit der Android-Alarm die neuen Extras (vol=0) bekommt
+                dbg("[main] sound changed scheduleTaskManagerForIndex", "role=", role)
+                scheduleTaskManagerForIndex(idx, nowMs)
             })
         }
     }
@@ -416,7 +420,7 @@ ApplicationWindow {
         if (actionsRunning) {
             const nowMs = Date.now()
             scheduleForIndex(idx, nowMs)
-            scheduleAndroidForIndex(idx, nowMs)
+            scheduleTaskManagerForIndex(idx, nowMs)
         }
     }
 
@@ -452,12 +456,14 @@ Component.onCompleted: {
         stopActions()
         SoundTaskManager.ensure()
         // statt testScheduling.open()
+        /*
         Qt.callLater(function() {
             Qt.callLater(function() {
                 testScheduling.open()
                 testScheduling.forceActiveFocus()
             })
         })
+        */
     }
 
     onClosing: function(close) {
@@ -571,21 +577,19 @@ Component.onCompleted: {
         schedulerInit()
         intervalScheduler.restart()
 
-        if (_isAndroid()) {
-            if (_isAppActive())
-                cancelAllSoundTaskManagers()
-            else
-                scheduleAllSoundTaskManagers()
-        }
+        // Scheduling ausschließlich über SoundTaskManager
+        cancelAllSoundTaskManagers()
+        scheduleAllSoundTaskManagers()
     }
+
 
     function stopActions() {
         dbg("[Main] stopActions()")
         actionsRunning = false
         intervalScheduler.stop()
 
-        if (_isAndroid())
-            cancelAllSoundTaskManagers()
+        // Scheduling ausschließlich über SoundTaskManager
+        cancelAllSoundTaskManagers()
 
         for (let i = 0; i < actionModel.count; i++) {
             actionModel.setProperty(i, "nextInMinutes", -1)
@@ -600,20 +604,20 @@ Component.onCompleted: {
         }
     }
 
+
     Connections {
         target: Qt.application
         function onStateChanged(state) {
-            if (!_isAndroid() || !actionsRunning) return
-            /* Android
+            if (!actionsRunning) return
+
+            // App aktiv -> keine doppelten Trigger im Vordergrund
             if (_isAppActive()) {
                 dbg("[SoundTaskManager] app active -> cancel all")
                 cancelAllSoundTaskManagers()
-                schedulerInit()
             } else {
-                dbg("[SoundTaskManager] app background -> schedule all")
+                dbg("[SoundTaskManager] app inactive/background -> schedule all")
                 scheduleAllSoundTaskManagers()
             }
-            */
         }
     }
 
@@ -776,12 +780,6 @@ Component.onCompleted: {
                 if (nowMs >= nextMs && lastFired !== nextMs) {
                     actionModel.setProperty(i, "lastFiredMs", nextMs)
 
-                    if (o.soundEnabled) {
-                        enqueueSound(o.sound || "Bell",
-                                    (typeof o.volume === "number") ? o.volume : 1.0,
-                                    false)
-                    }
-
                     const baseNow = nowMs + 1000
                     const next2 = computeNextIntervalFireMs(baseNow, o.startTime || "", o.endTime || "", intervalMinutes)
                     actionModel.setProperty(i, "nextFireMs", next2)
@@ -800,12 +798,6 @@ Component.onCompleted: {
                 const lastFiredF = parseInt(o.lastFiredMs || 0)
                 if (nowMs >= nextMsF && lastFiredF !== nextMsF) {
                     actionModel.setProperty(i, "lastFiredMs", nextMsF)
-
-                    if (o.soundEnabled) {
-                        enqueueSound(o.sound || "Bell",
-                                    (typeof o.volume === "number") ? o.volume : 1.0,
-                                    false)
-                    }
 
                     const baseNowF = nowMs + 1000
                     const next2F = computeNextFixedFireMs(baseNowF, o.fixedTime || "00:00")
@@ -1098,7 +1090,7 @@ Component.onCompleted: {
                 onDeleteRequested: function(idx) {
                     if (idx < 0 || idx >= actionModel.count) return
 
-                    cancelAndroidForIndex(idx)
+                    cancelTaskManagerForIndex(idx)
 
                     if (app.expandedIndex === idx)
                         app.expandedIndex = -1

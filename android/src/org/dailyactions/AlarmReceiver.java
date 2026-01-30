@@ -27,7 +27,10 @@ public class AlarmReceiver extends BroadcastReceiver {
     private static final String TAG = "AlarmReceiver";
 
     // Notification
-    private static final String CH_ID   = "dailyactions_reminder";
+    // IMPORTANT:
+    // - Android NotificationChannel settings are sticky once created.
+    // - We bump the channel id so existing installs immediately get a SILENT channel.
+    private static final String CH_ID   = "dailyactions_reminder_silent_v2";
     private static final String CH_NAME = "DailyActionReminder";
     private static final String CH_DESC = "Aktionen/Erinnerungen";
 
@@ -68,7 +71,8 @@ public class AlarmReceiver extends BroadcastReceiver {
             );
 
             final String soundName = intent.getStringExtra(AlarmScheduler.EXTRA_SOUND_NAME);
-            final float volume01 = intent.getFloatExtra(AlarmScheduler.EXTRA_VOLUME01, 1.0f);
+            final float volume01raw = intent.getFloatExtra(AlarmScheduler.EXTRA_VOLUME01, 1.0f);
+            final float volume01 = Math.max(0f, Math.min(1f, volume01raw));
 
             Log.e(TAG, "### onReceive ###"
                     + " action=" + intent.getAction()
@@ -110,6 +114,15 @@ public class AlarmReceiver extends BroadcastReceiver {
                     NotificationManager.IMPORTANCE_HIGH
             );
             ch.setDescription(CH_DESC);
+
+            // 🔇 Keep notifications silent (action sound is played by our own MediaPlayer)
+            // Channel wins over NotificationCompat.Builder settings on Android 8+.
+            ch.setSound(null, null);
+            ch.enableVibration(false);
+            ch.setVibrationPattern(null);
+            ch.enableLights(false);
+            ch.setShowBadge(false);
+
             nm.createNotificationChannel(ch);
             Log.w(TAG, "NotificationChannel created: " + CH_ID);
         }
@@ -143,7 +156,13 @@ public class AlarmReceiver extends BroadcastReceiver {
                     .setAutoCancel(true)
                     .setCategory(NotificationCompat.CATEGORY_REMINDER)
                     .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                    .setPriority(NotificationCompat.PRIORITY_HIGH);
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    // 🔇 extra safety (channel still wins on Android 8+)
+                    .setSilent(true)
+                    .setDefaults(0)
+                    .setSound(null)
+                    .setVibrate(null)
+                    .setOnlyAlertOnce(true);
 
             if (pi != null) b.setContentIntent(pi);
 
@@ -195,7 +214,15 @@ public class AlarmReceiver extends BroadcastReceiver {
         try {
             wlRef[0] = acquireShortWakelock(ctx);
 
-            int resId = 0;
+            // 🔇 MUTE muss auch im Hintergrund respektiert werden
+            volume01 = clamp01(volume01);
+            if (volume01 <= 0.0f) {
+                Log.w(TAG, "playShortBeep: MUTED (vol=0) -> skip soundName=" + soundName);
+                releaseWakelock(wlRef[0]);
+                safeFinish(pr);
+                return;
+            }
+int resId = 0;
             if (soundName != null && !soundName.trim().isEmpty()) {
                 resId = ctx.getResources().getIdentifier(soundName, "raw", ctx.getPackageName());
                 Log.w(TAG, "resolve raw '" + soundName + "' -> resId=" + resId);
@@ -215,7 +242,6 @@ public class AlarmReceiver extends BroadcastReceiver {
                 return;
             }
 
-            volume01 = clamp01(volume01);
 
             MediaPlayer mp = createAlarmPlayerFromRaw(ctx, resId);
             mpRef[0] = mp;

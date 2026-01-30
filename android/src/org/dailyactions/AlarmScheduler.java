@@ -72,7 +72,7 @@ public class AlarmScheduler {
             int intervalSeconds
     ) {
         scheduleWithParams(ctx, triggerAtMillis, soundName, requestId, title, actionText,
-                mode, fixedTime, startTime, endTime, intervalSeconds, 2.0f);
+                mode, fixedTime, startTime, endTime, intervalSeconds, 1.0f);
     }
 
     // --------------------------------------------------------------------------------------------
