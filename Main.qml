@@ -17,9 +17,16 @@ ApplicationWindow {
     // Debug
     // -------------------------
     property bool dbgEnabled: true
-    function lw(){if(typeof Log==='undefined'||!Log||typeof Log.w!=='function')return;Log.w(Array.prototype.join.call(arguments,' '))}
+    function lw() {
+        if(typeof Log==='undefined'||!Log||typeof Log.w!=='function')
+            return;Log.w(Array.prototype.join.call(arguments,' '))
+    }
 
-    function dbg(){if(!dbgEnabled)return;lw.apply(null,arguments)}
+    function dbg() {
+        if (!dbgEnabled) return
+        if (typeof Log !== "undefined" && Log && typeof Log.w === "function")
+            Log.w(Array.prototype.join.call(arguments, " "))
+    }
 
     // -------------------------
     // Sound mapping (Name -> qrc:/sounds/...)
@@ -62,6 +69,22 @@ ApplicationWindow {
     Connections {
         target: (typeof SoundTaskManager !== "undefined") ? SoundTaskManager : null
         function onLogLine(s) { lw("[SoundTaskManager]", s) }
+    }
+
+    function detectRunningActionsOnStartup() {
+        if (!SoundTaskManager) return
+
+        let any = false
+        for (let i = 0; i < actionModel.count; i++) {
+            const id = actionModel.get(i).alarmId   // oder wie bei dir die ID heißt
+            dbg("[checkAlarmId =", id)
+
+            if (SoundTaskManager.isScheduled(id)) {
+                any = true
+                break
+            }
+        }
+        return any
     }
 
     function updateUiPaused() {
@@ -195,7 +218,7 @@ ApplicationWindow {
             (o.fixedTime || "00:00"),
             (o.startTime || ""),
             (o.endTime || ""),
-            ((typeof o.intervalMinutes === "number" ? o.intervalMinutes : parseInt(o.intervalMinutes || 0)) * 60),
+            ((typeof o.intervalMinutes === "number" ? o.intervalMinutes : parseInt(o.intervalMinutes || 0)) * 10),
             effectiveVol
         )
     }
@@ -218,11 +241,6 @@ ApplicationWindow {
             const o = actionModel.get(i)
 
             let intervalMinutes = o.intervalMinutes
-            if ((intervalMinutes === undefined || intervalMinutes === null) && o.intervalSeconds !== undefined) {
-                intervalMinutes = Math.round(parseInt(o.intervalSeconds) / 60)
-            }
-            if (intervalMinutes === undefined || intervalMinutes === null || isNaN(intervalMinutes))
-                intervalMinutes = 60
 
             arr.push({
                 alarmId: (typeof o.alarmId === "number") ? o.alarmId : 0,
@@ -289,11 +307,6 @@ ApplicationWindow {
                 const o = arr[i] || {}
 
                 let intervalMinutes = o.intervalMinutes
-                if ((intervalMinutes === undefined || intervalMinutes === null) && o.intervalSeconds !== undefined) {
-                    intervalMinutes = Math.round(parseInt(o.intervalSeconds) / 60)
-                }
-                if (intervalMinutes === undefined || intervalMinutes === null || isNaN(intervalMinutes))
-                    intervalMinutes = 60
 
                 actionModel.append({
                     alarmId: (typeof o.alarmId === "number") ? o.alarmId : parseInt(o.alarmId || 0),
@@ -449,12 +462,19 @@ Component.onCompleted: {
             loadDefaults()
             saveNow()
         }
+        SoundTaskManager.ensure()
 
         normalizeAlarmIds()
+        // Running-Status aus Android-Alarms ableiten
+        app.actionsRunning = app.detectRunningActionsOnStartup()
+        dbg("[Main] startup actionsRunning=", actionsRunning)
+        if (app.actionsRunning) {
+            startActions()
+        } else {
+            stopActions()
+        }
 
-        actionsRunning = false
-        stopActions()
-        SoundTaskManager.ensure()
+        //stopActions()
         // statt testScheduling.open()
         /*
         Qt.callLater(function() {
@@ -467,7 +487,6 @@ Component.onCompleted: {
     }
 
     onClosing: function(close) {
-        stopActions()
         previewSfx.stop()
         saveNow()
     }
@@ -578,7 +597,7 @@ Component.onCompleted: {
         intervalScheduler.restart()
 
         // Scheduling ausschließlich über SoundTaskManager
-        cancelAllSoundTaskManagers()
+        //cancelAllSoundTaskManagers()
         scheduleAllSoundTaskManagers()
     }
 
@@ -604,22 +623,6 @@ Component.onCompleted: {
         }
     }
 
-
-    Connections {
-        target: Qt.application
-        function onStateChanged(state) {
-            if (!actionsRunning) return
-
-            // App aktiv -> keine doppelten Trigger im Vordergrund
-            if (_isAppActive()) {
-                dbg("[SoundTaskManager] app active -> cancel all")
-                cancelAllSoundTaskManagers()
-            } else {
-                dbg("[SoundTaskManager] app inactive/background -> schedule all")
-                scheduleAllSoundTaskManagers()
-            }
-        }
-    }
 
     function computeNextFixedFireMs(nowMs, fixedTime) {
         const now = new Date(nowMs)
@@ -933,7 +936,7 @@ Component.onCompleted: {
                         }
                     }
 
-                    Button {
+                                        Button {
                         id: addHeaderBtn
                         width: 80
                         height: 80

@@ -74,3 +74,9 @@ bool SoundTaskManager::cancel(int requestId)
 {
     return m_impl->cancel(requestId);
 }
+
+bool SoundTaskManager::isScheduled(int alarmId)
+{
+    return m_impl->isScheduled(alarmId);
+}
+

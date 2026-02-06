@@ -20,6 +20,36 @@
 
 namespace {
 
+QMutex g_schedMtx;
+QHash<const SoundTaskManagerDesktop*, QSet<int>> g_sched;
+
+static void markScheduled(const SoundTaskManagerDesktop* self, int id)
+{
+    if (!self || id <= 0) return;
+    QMutexLocker lk(&g_schedMtx);
+    g_sched[self].insert(id);
+}
+
+static void markCanceled(const SoundTaskManagerDesktop* self, int id)
+{
+    if (!self || id <= 0) return;
+    QMutexLocker lk(&g_schedMtx);
+    auto it = g_sched.find(self);
+    if (it == g_sched.end()) return;
+    it.value().remove(id);
+    if (it.value().isEmpty())
+        g_sched.erase(it);
+}
+
+static bool isMarkedScheduled(const SoundTaskManagerDesktop* self, int id)
+{
+    if (!self || id <= 0) return false;
+    QMutexLocker lk(&g_schedMtx);
+    auto it = g_sched.constFind(self);
+    if (it == g_sched.constEnd()) return false;
+    return it.value().contains(id);
+}
+
 struct TaskState {
     // One-shot trigger to start a playback at a specific time
     QPointer<QTimer> oneShot;
@@ -265,6 +295,11 @@ static void playOnce(SoundTaskManagerDesktop *self, TaskState &st, int requestId
     }
 }
 
+bool SoundTaskManagerDesktop::isScheduled(int alarmId) const
+{
+    return isMarkedScheduled(this, alarmId);
+}
+
 static void scheduleOneShot(SoundTaskManagerDesktop *self, TaskState &st, int requestId, qint64 triggerAtMillis)
 {
     if (st.oneShot) stopAndDeleteLater(st.oneShot);
@@ -394,6 +429,8 @@ int SoundTaskManagerDesktop::startIntervalSoundTask(const QString &rawSound,
 
     return id;
 }
+
+
 
 void SoundTaskManagerDesktop::cancelAlarmTask(int alarmId)
 {

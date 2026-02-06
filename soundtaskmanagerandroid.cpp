@@ -11,13 +11,6 @@
 #include <QJniEnvironment>
 #include <cstdarg>
 
-static void alogW(const char* fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    __android_log_vprint(ANDROID_LOG_WARN, "DailyActionReminder", fmt, ap);
-    va_end(ap);
-}
 
 static QJniObject getQtActivity()
 {
@@ -34,7 +27,6 @@ static bool clearJniException(const char *where)
     if (env->ExceptionCheck()) {
         env->ExceptionDescribe();
         env->ExceptionClear();
-        alogW("JNI EXCEPTION at %s", where);
         return false;
     }
     return true;
@@ -42,6 +34,21 @@ static bool clearJniException(const char *where)
 
 SoundTaskManagerAndroid::SoundTaskManagerAndroid(QObject *parent)
     : ISoundTaskManager(parent) {}
+
+void SoundTaskManagerAndroid::alogW(const char* fmt, ...)
+{
+    if (!fmt) return;
+
+    char buf[2048];
+
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    // direkt über deine Instanz
+    logInst->w(QString::fromUtf8(buf));
+}
 
 void SoundTaskManagerAndroid::ensure()
 {
@@ -191,6 +198,7 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
     QJniObject jStart = QJniObject::fromString(startTime);
     QJniObject jEnd   = QJniObject::fromString(endTime);
 
+    alogW("istScheduled() start id=%1",requestId);
     alogW("SoundTaskManager.scheduleWithParams id=%d at=%lld inMs=%lld mode=%s sound=%s vol=%.2f fixed=%s start=%s end=%s intervalSec=%d",
           requestId,
           (long long)triggerAtMillis,
@@ -228,9 +236,10 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
 
 bool SoundTaskManagerAndroid::cancel(int requestId)
 {
+    alogW("start cancel reqId=%d",requestId);
     QJniObject activity = getQtActivity();
     if (!activity.isValid()) {
-        emit logLine("cancel(): QtNative.activity() invalid");
+        alogW("cancel(): QtNative.activity() invalid");
         return false;
     }
 
@@ -243,7 +252,7 @@ bool SoundTaskManagerAndroid::cancel(int requestId)
         );
 
     const bool ok = clearJniException("cancel");
-    emit logLine(ok ? "cancel(): OK" : "cancel(): EXCEPTION");
+    alogW(ok ? "cancel(): OK" : "cancel(): EXCEPTION");
     return ok;
 }
 
@@ -343,3 +352,28 @@ void SoundTaskManagerAndroid::cancelAlarmTask(int alarmId)
     cancel(alarmId);
     freeId(alarmId);
 }
+
+
+bool SoundTaskManagerAndroid::isScheduled(int requestId) const
+{
+   logInst->w(QString("istScheduled() start id=%1").arg(requestId));
+   QJniObject activity = getQtActivity();
+    if (!activity.isValid()) {
+        emit logLine("isScheduled(): QtNative.activity() invalid");
+        return false;
+    }
+
+    const jboolean jb = QJniObject::callStaticMethod<jboolean>(
+        "org/dailyactions/AlarmScheduler",
+        "isScheduled",
+        "(Landroid/content/Context;I)Z",
+        activity.object<jobject>(),
+        (jint)requestId
+        );
+
+    const bool ok = clearJniException("isScheduled");
+    const bool scheduled = ok ? (jb == JNI_TRUE) : false;
+    emit logLine(QString("isScheduled(%1): %2").arg(requestId).arg(scheduled ? "true" : "false"));
+    return scheduled;
+}
+

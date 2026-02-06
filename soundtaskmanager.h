@@ -54,6 +54,8 @@ public:
 
     Q_INVOKABLE bool cancel(int requestId);
 
+    Q_INVOKABLE bool isScheduled(int alarmId);
+
 signals:
     void logLine(const QString &line);
 

@@ -7,6 +7,8 @@
 #include <QSet>
 #include <QMutex>
 
+#include "logqml.h"
+
 class QTimer;
 
 class SoundTaskManagerAndroid : public ISoundTaskManager
@@ -60,6 +62,8 @@ public:
 
     bool cancel(int requestId) override;
 
+    bool isScheduled(int alarmId) const override;
+
 private:
     int allocId_locked();
     void freeId_locked(int id);
@@ -69,6 +73,9 @@ private:
 
     void armAutoFreeFixed(int id, qint64 fixedTimeMs);
 
+    LogQML *logInst = new LogQML();
+    void alogW(const char* fmt, ...);
+
 private:
     mutable QMutex m_mutex;
     int m_nextId = 777001;
@@ -77,3 +84,4 @@ private:
     QSet<int> m_intervalIds;
     QHash<int, QTimer*> m_autoFreeTimers;
 };
+

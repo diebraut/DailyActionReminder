@@ -55,6 +55,10 @@ public:
 
     bool cancel(int requestId) override;
 
+    bool isScheduled(int alarmId) const override;
+
+
+
 private:
     int nextId();
 

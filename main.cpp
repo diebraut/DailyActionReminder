@@ -112,7 +112,7 @@ int main(int argc, char *argv[])
 
     QQmlApplicationEngine engine;
     auto* log = new LogQML(&engine);
-    log->setTag("DailyActionReminder");   // dein Wunsch-Tag
+    log->setTag("qml");   // dein Wunsch-Tag
 
     QObject::connect(&engine, &QQmlApplicationEngine::warnings,
                      [](const QList<QQmlError>& warnings){

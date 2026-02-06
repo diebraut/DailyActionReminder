@@ -16,6 +16,7 @@ import android.os.Looper;
 import android.os.PowerManager;
 
 import android.util.Log;
+import java.util.Calendar;
 
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -47,6 +48,40 @@ public class AlarmReceiver extends BroadcastReceiver {
 
         String mode = intent.getStringExtra(AlarmScheduler.EXTRA_MODE);
         String fixed = intent.getStringExtra(AlarmScheduler.EXTRA_FIXED_TIME);
+        try {
+            long nowMs = System.currentTimeMillis();
+            long plannedMs = -1;
+
+            // für fixed="HH:MM" -> heute HH:MM:00.000
+            if (fixed != null && fixed.contains(":")) {
+                String[] p = fixed.trim().split(":");
+                if (p.length >= 2) {
+                    int hh = Integer.parseInt(p[0]);
+                    int mm = Integer.parseInt(p[1]);
+
+                    Calendar c = Calendar.getInstance();
+                    c.setTimeInMillis(nowMs);
+                    c.set(Calendar.HOUR_OF_DAY, hh);
+                    c.set(Calendar.MINUTE, mm);
+                    c.set(Calendar.SECOND, 0);
+                    c.set(Calendar.MILLISECOND, 0);
+                    plannedMs = c.getTimeInMillis();
+                }
+            }
+
+            if (plannedMs > 0) {
+                long diffMs = nowMs - plannedMs;
+                Log.w(TAG, "checktime(fixed): planned=" + new java.util.Date(plannedMs)
+                        + " now=" + new java.util.Date(nowMs)
+                        + " diffMs=" + diffMs
+                        + " diffSec=" + (diffMs / 1000.0));
+            } else {
+                Log.w(TAG, "checktime: cannot compute plannedMs from fixed='" + fixed + "'");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "checktime failed: " + t);
+        }
+
 
         Log.w("AlarmReceiver",
               "ONRECEIVE id=" + id +
@@ -55,8 +90,21 @@ public class AlarmReceiver extends BroadcastReceiver {
               " fixed=" + fixed +
               " now=" + new java.util.Date(System.currentTimeMillis()));
         Log.w("AlarmReceiver",
-              "nowMs=" + System.currentTimeMillis() +
-              " now=" + new java.util.Date(System.currentTimeMillis()));
+        "nowMs=" + System.currentTimeMillis() +
+        " now=" + new java.util.Date(System.currentTimeMillis()));
+        long plannedMs = intent.getLongExtra(AlarmScheduler.EXTRA_TRIGGER_AT_MILLIS, -1L);
+        if (plannedMs > 0) {
+            long nowMs = System.currentTimeMillis();
+            long diffMs = nowMs - plannedMs;
+            Log.w("AlarmReceiver checktime",
+                  "plannedMs=" + plannedMs +
+                  " planned=" + new java.util.Date(plannedMs) +
+                  " nowMs=" + nowMs +
+                  " diffMs=" + diffMs +
+                  " diffSec=" + (diffMs/1000.0));
+        } else {
+            Log.w("AlarmReceiver  checktime", "plannedMs missing (EXTRA_TRIGGER_AT_MILLIS)");
+        }
 
         try {
             if (context == null || intent == null) {

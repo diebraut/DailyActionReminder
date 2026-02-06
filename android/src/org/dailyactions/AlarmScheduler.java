@@ -30,6 +30,8 @@ public class AlarmScheduler {
     // ✅ Neu: Sekunden
     public static final String EXTRA_INTERVAL_SECONDS = "intervalSeconds";
 
+    public static final String EXTRA_TRIGGER_AT_MILLIS = "triggerAtMillis";
+
     // ✅ Legacy: bleibt erhalten (wird als Sekunden interpretiert)
     @Deprecated
     public static final String EXTRA_INTERVAL_MINUTES = "intervalMinutes";
@@ -49,6 +51,39 @@ public class AlarmScheduler {
     public static void ensureNotificationPermission(Activity activity) {
         Log.w(TAG, "ensureNotificationPermission(Activity) called (NO-OP, notifications disabled by design)");
     }
+
+    // --------------------------------------------------------------------------------------------
+    // Check if a requestId is currently scheduled (PendingIntent exists)
+    // --------------------------------------------------------------------------------------------
+    public static boolean isScheduled(Context ctx, int requestId) {
+        if (ctx == null) {
+            logI("isScheduled? ctx =null");
+            return false;
+        }
+        try {
+            Intent i = buildBaseIntent(ctx, requestId);
+
+            int flags = PendingIntent.FLAG_NO_CREATE;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                flags |= PendingIntent.FLAG_IMMUTABLE;
+            }
+
+            PendingIntent pi = PendingIntent.getBroadcast(ctx, requestId, i, flags);
+            boolean ok = (pi != null);
+
+            logI("isScheduled? id=" + requestId
+                    + " action=" + i.getAction()
+                    + " flags=" + flags
+                    + " pi=" + ok
+                    + (ok ? (" creatorPkg=" + pi.getCreatorPackage()) : "")
+            );
+            return ok;
+        } catch (Throwable t) {
+            logE("isScheduled failed", t);
+            return false;
+        }
+    }
+
 
     @SuppressWarnings("unused")
     public static void ensureNotificationPermission(Context ctx) {
@@ -140,6 +175,10 @@ public class AlarmScheduler {
             i.putExtra(EXTRA_INTERVAL_SECONDS, intervalSeconds);
             i.putExtra(EXTRA_INTERVAL_MINUTES, intervalSeconds);
 
+            // ✅ seconds (neu + legacy)
+             i.putExtra(EXTRA_INTERVAL_SECONDS, intervalSeconds);
+             i.putExtra(EXTRA_INTERVAL_MINUTES, intervalSeconds);
+
             i.putExtra(EXTRA_VOLUME01, v);
 
             PendingIntent pi = PendingIntent.getBroadcast(ctx, requestId, i, pendingIntentFlags());
@@ -159,20 +198,27 @@ public class AlarmScheduler {
 
     public static void cancel(Context ctx, int requestId) {
         if (ctx == null) return;
+        Context app = ctx.getApplicationContext();
 
-        try {
-            AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
-            if (am == null) return;
+        AlarmManager am = (AlarmManager) app.getSystemService(Context.ALARM_SERVICE);
+        if (am == null) return;
 
-            Intent i = buildBaseIntent(ctx, requestId);
-            PendingIntent pi = PendingIntent.getBroadcast(ctx, requestId, i, pendingIntentFlags());
+        Intent i = new Intent(app, AlarmReceiver.class);
+        i.setAction("org.dailyactions.ALARM_" + requestId);
 
+        int flags = PendingIntent.FLAG_NO_CREATE;
+        if (android.os.Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+
+        PendingIntent pi = PendingIntent.getBroadcast(app, requestId, i, flags);
+
+        logI("CANCEL id=" + requestId + " pi=" + (pi != null));
+        if (pi != null) {
             am.cancel(pi);
-            logI("CANCEL id=" + requestId);
-
-        } catch (Throwable t) {
-            logE("cancel failed", t);
+            pi.cancel();                 // <<< wichtig
         }
+
+        PendingIntent pi2 = PendingIntent.getBroadcast(app, requestId, i, flags);
+        logI("CANCEL after id=" + requestId + " piNow=" + (pi2 != null));
     }
 
     // --------------------------------------------------------------------------------------------
