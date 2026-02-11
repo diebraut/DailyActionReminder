@@ -80,3 +80,8 @@ bool SoundTaskManager::isScheduled(int alarmId)
     return m_impl->isScheduled(alarmId);
 }
 
+qint64 SoundTaskManager::getNextAtMs(int alarmId)
+{
+    return m_impl->getNextAtMs(alarmId);
+}
+

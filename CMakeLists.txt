@@ -21,8 +21,8 @@ qt_add_executable(appDailyActionReminder
 # Android-Only Quellen (JNI / android/log.h) -> nur auf Android bauen
 if(ANDROID)
     target_sources(appDailyActionReminder PRIVATE
-        soundtaskmanagerandroid.h
-        soundtaskmanagerandroid.cpp
+
+
     )
     # für __android_log_vprint / logcat
     target_link_libraries(appDailyActionReminder PRIVATE log)
@@ -35,6 +35,10 @@ qt_add_qml_module(appDailyActionReminder
         Main.qml
         ActionDelegate.qml
         QML_FILES TestScheduling.qml
+        SOURCES
+        SOURCES
+        SOURCES soundtaskmanagerandroid.h
+        SOURCES soundtaskmanagerandroid.cpp
 )
 
 # ✅ Variante B: Root-QRC, damit qrc:/sounds/... weiter funktioniert

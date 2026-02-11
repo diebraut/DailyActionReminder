@@ -131,105 +131,80 @@ ApplicationWindow {
         return map[key] || "bell"
     }
 
-    // Stable IDs for Android AlarmManager (persisted)
-    property int nextAlarmId: 1
-    function ensureAlarmId(idx) {
-        if (idx < 0 || idx >= actionModel.count) return -1
-        const o = actionModel.get(idx)
-        if (typeof o.alarmId === "number" && o.alarmId > 0) return o.alarmId
-        const id = Math.max(1, nextAlarmId)
-        actionModel.setProperty(idx, "alarmId", id)
-        nextAlarmId = id + 1
-        saveNow()
-        return id
-    }
-
-    function normalizeAlarmIds() {
-        let maxId = 0
-        let changed = false
-        for (let i = 0; i < actionModel.count; i++) {
-            const o = actionModel.get(i)
-            let id = (typeof o.alarmId === "number") ? o.alarmId : 0
-            if (id <= 0) {
-                id = maxId + 1
-                actionModel.setProperty(i, "alarmId", id)
-                changed = true
-            }
-            if (id > maxId) maxId = id
-        }
-        nextAlarmId = maxId + 1
-        if (changed) saveNow()
-    }
     function _isAppActive() { return Qt.application.state === Qt.ApplicationActive }
 
-    function _shouldUseSoundTaskManagersNow() {
-        // Plattform-unabhängig: Scheduling wird vom SoundTaskManager entschieden.
-        return actionsRunning
-    }
-
-    function _hasSoundTaskManagerBridge() {
-        return (typeof SoundTaskManager !== "undefined") && SoundTaskManager
-    }
-
     function cancelTaskManagerForIndex(idx) {
-        if (!_hasSoundTaskManagerBridge()) return
         if (idx < 0 || idx >= actionModel.count) return
         const o = actionModel.get(idx)
         const id = (typeof o.alarmId === "number") ? o.alarmId : 0
         if (id > 0) {
-            dbg("[SoundTaskManager] cancel idx=", idx, " id=", id)
-            SoundTaskManager.cancel(id)
+            dbg("[SoundTaskManager] cancel idx=", idx, " alarmId=", id)
+            SoundTaskManager.cancelAlarmTask(id)
+            actionModel.setProperty(idx, "alarmId", 0)
         }
     }
 
     function cancelAllSoundTaskManagers() {
-        if (!_hasSoundTaskManagerBridge()) return
         for (let i = 0; i < actionModel.count; i++)
             cancelTaskManagerForIndex(i)
     }
 
+    function _hhmmToTodayMs(nowMs, hhmm) {
+        if (!hhmm || typeof hhmm !== "string" || hhmm.indexOf(":") < 0) return 0
+        const p = hhmm.trim().split(":")
+        if (p.length < 2) return 0
+        const hh = parseInt(p[0]); const mm = parseInt(p[1])
+        if (isNaN(hh) || isNaN(mm)) return 0
+        const d = new Date(nowMs)
+        d.setHours(hh, mm, 0, 0)
+        return d.getTime()
+    }
+
+
     function scheduleTaskManagerForIndex(idx, nowMs) {
-        if (!_hasSoundTaskManagerBridge()) return
         if (idx < 0 || idx >= actionModel.count) return
-
-        const id = ensureAlarmId(idx)
-        if (id <= 0) return
-
         const o = actionModel.get(idx)
-        const fireMs = (typeof o.nextFireMs === "number") ? o.nextFireMs : 0
-        if (!fireMs || fireMs <= 0) return
 
-        const rawSound = soundRawForName(o.sound)
-        const title = (typeof o.text === "string" && o.text.length > 0) ? o.text : "Reminder"
-        const text = ""
+        // Falls schon ein Alarm existiert: erst weg damit (sonst doppelt)
+        cancelTaskManagerForIndex(idx)
 
+        // disabled / volume=0 => bleibt gecancelt
         const enabled = (o.soundEnabled === undefined) ? true : !!o.soundEnabled
         const baseVol = (typeof o.volume === "number" && !isNaN(o.volume)) ? o.volume : 1.0
         const effectiveVol = (!app.allSoundsDisabled && enabled) ? Math.max(0.0, Math.min(1.0, baseVol)) : 0.0
-
-        dbg("[SoundTaskManager] schedule idx=", idx, " id=", id, " fire=", new Date(fireMs).toISOString(), " mode=", o.mode, " enabled=", enabled, " vol=", effectiveVol)
-        SoundTaskManager.scheduleWithParams(
-            fireMs,
-            rawSound,
-            id,
-            title,
-            text,
-            (o.mode === "interval" ? "interval" : "fixed"),
-            (o.fixedTime || "00:00"),
-            (o.startTime || ""),
-            (o.endTime || ""),
-            ((typeof o.intervalMinutes === "number" ? o.intervalMinutes : parseInt(o.intervalMinutes || 0)) * 10),
-            effectiveVol
-        )
-    }
-
-    function scheduleAllSoundTaskManagers() {
-        if (!_hasSoundTaskManagerBridge()) return
-        const nowMs = Date.now()
-        for (let i = 0; i < actionModel.count; i++) {
-            scheduleForIndex(i, nowMs) // UI countdown only
-            scheduleTaskManagerForIndex(i, nowMs) // real scheduling
+        if (!enabled || effectiveVol <= 0.0) {
+            dbg("[SoundTaskManager] skip schedule (disabled/vol=0) idx=", idx, " enabled=", enabled, " vol=", effectiveVol)
+            return
         }
+
+        const rawSound = soundRawForName(o.sound)
+        const txt = (typeof o.text === "string" && o.text.length > 0) ? o.text : "Reminder"
+
+        if ((o.mode || "fixed") === "fixed") {
+            const fireMs = (typeof o.nextFireMs === "number") ? o.nextFireMs : 0
+            if (!fireMs || fireMs <= 0) return
+
+            dbg("[SoundTaskManager] startFixed idx=", idx, " fire=", new Date(fireMs).toISOString(), " vol=", effectiveVol)
+            const newId = SoundTaskManager.startFixedSoundTask(rawSound, txt, fireMs, effectiveVol, 0)
+            dbg("[SoundTaskManager] startFixed -> id=", newId)
+            if (newId > 0) actionModel.setProperty(idx, "alarmId", newId)
+            return
+        }
+
+        // interval
+        const intervalMinutes = (typeof o.intervalMinutes === "number")
+                ? o.intervalMinutes
+                : parseInt(o.intervalMinutes || 0)
+        const intervalSecs = (intervalMinutes > 0) ? intervalMinutes * 60 : 0
+        if (intervalSecs <= 0) return
+
+        const startMs = _hhmmToTodayMs(nowMs, o.startTime || "")
+        const endMs   = _hhmmToTodayMs(nowMs, o.endTime || "")
+
+        dbg("[SoundTaskManager] startInterval idx=", idx, " startMs=", startMs, " endMs=", endMs, " intervalSecs=", intervalSecs, " vol=", effectiveVol)
+        const newId2 = SoundTaskManager.startIntervalSoundTask(rawSound, txt, startMs, endMs, intervalSecs, effectiveVol, 0)
+        dbg("[SoundTaskManager] startInterval -> id=", newId2)
+        if (newId2 > 0) actionModel.setProperty(idx, "alarmId", newId2)
     }
 
     // -------------------------
@@ -322,7 +297,6 @@ ApplicationWindow {
                 })
             }
 
-            normalizeAlarmIds()
             return true
         } catch (e) {
             console.warn("Load JSON failed:", e)
@@ -356,7 +330,6 @@ ApplicationWindow {
             "soundEnabled": true,
             "volume": 1.0
         })
-        normalizeAlarmIds()
     }
 
     function saveNow() {
@@ -391,29 +364,32 @@ ApplicationWindow {
         if (actionsRunning && (role === "sound" || role === "soundEnabled" || role === "volume")) {
             dbg("[main] sound changed", "role=", role)
             Qt.callLater(function() {
-                // immer: alten Task weg
-                dbg("[main] sound changed cancel", "role=", role)
+                // 1) Wenn ein Alarm schon läuft: nur Extras updaten, Phase behalten
+                if (rescheduleExistingForIndexKeepPhase(idx)) {
+                    dbg("[main] sound changed -> rescheduled keep phase")
+                    return
+                }
+
+                // 2) Fallback: wenn kein laufender Alarm (oder kein nextAt verfügbar) => normal neu planen
+                dbg("[main] sound changed -> fallback full reschedule")
                 cancelTaskManagerForIndex(idx)
 
                 const nowMs = Date.now()
-
-                // UI-Next/Countdown ggf. aktualisieren wie vorher (unverändert)
-                dbg("[main] sound changed scheduleForIndex", "role=", role)
                 scheduleForIndex(idx, nowMs)
 
-                // immer neu planen – auch wenn soundEnabled=false oder volume=0,
-                // damit der Android-Alarm die neuen Extras (vol=0) bekommt
-                dbg("[main] sound changed scheduleTaskManagerForIndex", "role=", role)
+                const o = actionModel.get(idx)
+                const enabled = (o.soundEnabled === undefined) ? true : (o.soundEnabled !== false)
+                const vol = Number(o.volume) || 0
+                if (!enabled || vol <= 0) return
+
                 scheduleTaskManagerForIndex(idx, nowMs)
             })
         }
     }
 
     function addNewAction() {
-        const newAlarmId = nextAlarmId
-        nextAlarmId += 1
         actionModel.append({
-            "alarmId": newAlarmId,
+            "alarmId": 0,                 // <-- neu: keine Vorab-ID
             "text": "Neue Aktion",
             "mode": "fixed",
             "fixedTime": "00:00",
@@ -432,12 +408,10 @@ ApplicationWindow {
 
         if (actionsRunning) {
             const nowMs = Date.now()
-            scheduleForIndex(idx, nowMs)
-            scheduleTaskManagerForIndex(idx, nowMs)
+            scheduleForIndex(idx, nowMs)          // UI
+            scheduleTaskManagerForIndex(idx, nowMs) // ruft start... und setzt alarmId
         }
     }
-
-
 
     // -------------------------
     // Test-Scheduling Dialog (ausgelagert)
@@ -464,12 +438,12 @@ Component.onCompleted: {
         }
         SoundTaskManager.ensure()
 
-        normalizeAlarmIds()
         // Running-Status aus Android-Alarms ableiten
         app.actionsRunning = app.detectRunningActionsOnStartup()
         dbg("[Main] startup actionsRunning=", actionsRunning)
         if (app.actionsRunning) {
-            startActions()
+            schedulerInit()
+            syncUiFromAndroidNextAtOnStartup()
         } else {
             stopActions()
         }
@@ -593,14 +567,29 @@ Component.onCompleted: {
     function startActions() {
         dbg("[Main] startActions()")
         actionsRunning = true
-        schedulerInit()
-        intervalScheduler.restart()
 
-        // Scheduling ausschließlich über SoundTaskManager
-        //cancelAllSoundTaskManagers()
-        scheduleAllSoundTaskManagers()
+        schedulerInit()
+
+        // UI+Model einmal initial
+        const nowMs = Date.now()
+        initUiAll(nowMs)
+
+        // echtes Scheduling einmalig
+        scheduleAllAlarms(nowMs)
+
+        // optional: explizit einmal tick, falls du es sofort willst
+        schedulerStep()
     }
 
+    function initUiAll(nowMs) {
+        for (let i = 0; i < actionModel.count; i++)
+            scheduleForIndex(i, nowMs) // setzt nextFireMs + countdown
+    }
+
+    function scheduleAllAlarms(nowMs) {
+        for (let i = 0; i < actionModel.count; i++)
+            scheduleTaskManagerForIndex(i, nowMs) // Android alarm scheduling
+    }
 
     function stopActions() {
         dbg("[Main] stopActions()")
@@ -741,7 +730,69 @@ Component.onCompleted: {
             return
         }
 
-        const nextMs = computeNextIntervalFireMs(nowMs, o.startTime || "", o.endTime || "", intervalMinutes)
+        const intervalMs = intervalMinutes * 60 * 1000
+
+        function hhmmToTodayMs(hhmm, baseNowMs) {
+            if (!hhmm || typeof hhmm !== "string" || hhmm.indexOf(":") < 0) return 0
+            const p = hhmm.trim().split(":")
+            if (p.length < 2) return 0
+            const hh = parseInt(p[0]); const mm = parseInt(p[1])
+            if (isNaN(hh) || isNaN(mm)) return 0
+            const d = new Date(baseNowMs)
+            d.setHours(hh, mm, 0, 0)
+            return d.getTime()
+        }
+
+        const startMs0 = hhmmToTodayMs(o.startTime || "", nowMs)
+        const endMs0   = hhmmToTodayMs(o.endTime   || "", nowMs)
+
+        const hasStart = startMs0 > 0
+        const hasEnd   = endMs0 > 0
+
+        // Fenster heute
+        let winStart = startMs0
+        let winEnd   = endMs0
+
+        // über Mitternacht: end <= start => end + 24h
+        const dayMs = 24 * 60 * 60 * 1000
+        if (hasStart && hasEnd && winEnd <= winStart) {
+            winEnd += dayMs
+        }
+
+        // 1) firstAt: erst nach Intervall
+        let nextMs = nowMs + intervalMs
+
+        // 2) auf Zeitfenster schieben
+        function inWindow(t, s, e) {
+            if (hasStart && hasEnd) return (t >= s && t < e)
+            if (hasStart) return (t >= s)
+            if (hasEnd)   return (t < e)
+            return true
+        }
+
+        if (hasStart || hasEnd) {
+            if (hasStart && hasEnd) {
+                if (!inWindow(nextMs, winStart, winEnd)) {
+                    if (nextMs < winStart) {
+                        nextMs = winStart
+                    } else {
+                        // nach Endfenster -> nächstes Fenster (morgen) am Start
+                        nextMs = winStart + dayMs
+                    }
+                }
+            } else if (hasStart && !hasEnd) {
+                if (nextMs < winStart) nextMs = winStart
+            } else if (!hasStart && hasEnd) {
+                // nur End: wenn nextMs >= end, dann nicht sinnvoll -> kein next
+                if (nextMs >= winEnd) {
+                    _clearIntervalCountdown(idx)
+                    actionModel.setProperty(idx, "nextFireMs", 0)
+                    actionModel.setProperty(idx, "lastFiredMs", 0)
+                    return
+                }
+            }
+        }
+
         actionModel.setProperty(idx, "nextFireMs", nextMs)
         actionModel.setProperty(idx, "lastFiredMs", 0)
         _setIntervalCountdown(idx, nextMs, nowMs)
@@ -752,6 +803,29 @@ Component.onCompleted: {
         for (let i = 0; i < actionModel.count; i++)
             scheduleForIndex(i, nowMs)
         schedulerStep()
+    }
+
+    function syncUiFromAndroidNextAtOnStartup() {
+        const nowMs = Date.now()
+
+        for (let i = 0; i < actionModel.count; i++) {
+            const o = actionModel.get(i)
+            const id = (typeof o.alarmId === "number") ? o.alarmId : 0
+            if (id <= 0) continue
+
+            if (!SoundTaskManager.isScheduled(id)) continue
+
+            const nextAt = SoundTaskManager.getNextAtMs(id)
+            if (!nextAt || nextAt <= 0) continue
+
+            actionModel.setProperty(i, "nextFireMs", nextAt)
+
+            if ((o.mode || "fixed") === "interval") {
+                _setIntervalCountdown(i, nextAt, nowMs)
+            } else {
+                _setFixedCountdown(i, nextAt, nowMs)
+            }
+        }
     }
 
     function schedulerStep() {
@@ -771,24 +845,31 @@ Component.onCompleted: {
                     continue
                 }
 
-                let nextMs = parseInt(o.nextFireMs || 0)
+                // 1) primär: echte Android-Planung lesen
+                const id = (typeof o.alarmId === "number") ? o.alarmId : 0
+                let nextMs = 0
+
+                if (id > 0) {
+                    nextMs = SoundTaskManager.getNextAtMs(id)   // <<<<<< der Sync-Key
+                }
+
+                // 2) Fallback: falls Android nichts liefert (z.B. Desktop oder noch nicht gespeichert)
                 if (!nextMs || isNaN(nextMs) || nextMs <= 0) {
-                    nextMs = computeNextIntervalFireMs(nowMs, o.startTime || "", o.endTime || "", intervalMinutes)
+                    nextMs = parseInt(o.nextFireMs || 0)
+                    if (!nextMs || isNaN(nextMs) || nextMs <= 0) {
+                        // “erst nach Intervall”
+                        nextMs = nowMs + intervalMinutes * 60 * 1000
+                    }
+                }
+
+                // 3) UI aktualisieren
+                if (nextMs !== parseInt(o.nextFireMs || 0)) {
                     actionModel.setProperty(i, "nextFireMs", nextMs)
                 }
-
                 _setIntervalCountdown(i, nextMs, nowMs)
 
-                const lastFired = parseInt(o.lastFiredMs || 0)
-                if (nowMs >= nextMs && lastFired !== nextMs) {
-                    actionModel.setProperty(i, "lastFiredMs", nextMs)
-
-                    const baseNow = nowMs + 1000
-                    const next2 = computeNextIntervalFireMs(baseNow, o.startTime || "", o.endTime || "", intervalMinutes)
-                    actionModel.setProperty(i, "nextFireMs", next2)
-                    _setIntervalCountdown(i, next2, baseNow)
-                }
-
+                // WICHTIG: kein lastFired/computeNextIntervalFireMs mehr in der UI!
+                // Android reschedult selbst und speichert nextAtMs.
             } else {
                 let nextMsF = parseInt(o.nextFireMs || 0)
                 if (!nextMsF || isNaN(nextMsF) || nextMsF <= 0) {
@@ -1105,8 +1186,7 @@ Component.onCompleted: {
 
                     if (actionsRunning) {
                         schedulerInit()
-                        if (_shouldUseSoundTaskManagersNow())
-                            scheduleAllSoundTaskManagers()
+                        //scheduleAllSoundTaskManagers()
                     }
                 }
             }

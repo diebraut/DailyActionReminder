@@ -57,6 +57,7 @@ public:
 
     bool isScheduled(int alarmId) const override;
 
+    qint64 getNextAtMs(int alarmId) const override;
 
 
 private:

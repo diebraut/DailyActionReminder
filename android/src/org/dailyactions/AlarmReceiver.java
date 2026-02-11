@@ -23,7 +23,81 @@ import android.app.NotificationManager;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 
+import android.os.SystemClock;
+
 public class AlarmReceiver extends BroadcastReceiver {
+
+    private static final Object PLAY_LOCK = new Object();
+    private static final java.util.ArrayDeque<PlayReq> PLAY_Q = new java.util.ArrayDeque<>();
+    private static boolean PLAYING = false;
+
+    private static final class PlayReq {
+        final Context appCtx;
+        final String soundName;
+        final float vol;
+        final int requestId;
+        final PendingResult pr;
+
+        PlayReq(Context appCtx, String soundName, float vol, int requestId, PendingResult pr) {
+            this.appCtx = appCtx;
+            this.soundName = soundName;
+            this.vol = vol;
+            this.requestId = requestId;
+            this.pr = pr;
+        }
+    }
+
+    private static void enqueuePlay(Context appCtx, String soundName, float vol, int requestId, PendingResult pr) {
+        synchronized (PLAY_LOCK) {
+            PLAY_Q.addLast(new PlayReq(appCtx, soundName, vol, requestId, pr));
+            Log.w(TAG, "PLAY enqueue id=" + requestId + " q=" + PLAY_Q.size());
+            if (!PLAYING) {
+                PLAYING = true;
+                playNextLocked();
+            }
+        }
+    }
+
+    private static void playNextLocked() {
+        final PlayReq r;
+        synchronized (PLAY_LOCK) {
+            r = PLAY_Q.pollFirst();
+            if (r == null) {
+                PLAYING = false;
+                Log.w(TAG, "PLAY queue empty");
+                return;
+            }
+        }
+
+        final long tDeq = SystemClock.elapsedRealtime();
+        Log.w(TAG, "PLAY dequeue id=" + r.requestId
+                + " q=" + PLAY_Q.size()
+                + " tDeq=" + tDeq
+                + " thread=" + Thread.currentThread().getName());
+
+        final Handler h = new Handler(Looper.getMainLooper());
+
+        final long tPost = SystemClock.elapsedRealtime();
+        Log.w(TAG, "PLAY postDelayed(0) id=" + r.requestId
+                + " tPost=" + tPost
+                + " thread=" + Thread.currentThread().getName());
+
+        h.postDelayed(() -> {
+            final long tRun = SystemClock.elapsedRealtime();
+            Log.w(TAG, "PLAY runnable RUN id=" + r.requestId
+                    + " delaySinceDeq=" + (tRun - tDeq) + "ms"
+                    + " delaySincePost=" + (tRun - tPost) + "ms"
+                    + " thread=" + Thread.currentThread().getName());
+
+            playShortBeep(r.appCtx, r.soundName, r.vol, r.pr, () -> {
+                final long tDone = SystemClock.elapsedRealtime();
+                Log.w(TAG, "PLAY onDone id=" + r.requestId
+                        + " durSinceRun=" + (tDone - tRun) + "ms"
+                        + " thread=" + Thread.currentThread().getName());
+                playNextLocked();
+            });
+        }, 0);
+    }
 
     private static final String TAG = "AlarmReceiver";
 
@@ -37,74 +111,20 @@ public class AlarmReceiver extends BroadcastReceiver {
 
     // Hard stop damit "kurz piepen" garantiert kurz bleibt
     private static final int BEEP_MAX_MS = 1200;     // 1.2s
-    private static final int WAKELOCK_MS = 5000;     // 5s (nur damit CPU kurz wach bleibt)
+    private static final int WAKELOCK_MS = 1000;     // 5s (nur damit CPU kurz wach bleibt)
+
+    private static void finishAndNextOnce(final PendingResult pr,
+                                          final Runnable onDone,
+                                          final java.util.concurrent.atomic.AtomicBoolean done)
+    {
+        if (!done.compareAndSet(false, true)) return;
+        safeFinish(pr);
+        if (onDone != null) onDone.run();
+    }
 
     @Override
     public void onReceive(Context context, Intent intent) {
         final PendingResult pr = goAsync();
-
-        int id = intent.getIntExtra(AlarmScheduler.EXTRA_REQUEST_ID,
-                intent.getIntExtra(AlarmScheduler.EXTRA_NOTIF_ID, -1));
-
-        String mode = intent.getStringExtra(AlarmScheduler.EXTRA_MODE);
-        String fixed = intent.getStringExtra(AlarmScheduler.EXTRA_FIXED_TIME);
-        try {
-            long nowMs = System.currentTimeMillis();
-            long plannedMs = -1;
-
-            // für fixed="HH:MM" -> heute HH:MM:00.000
-            if (fixed != null && fixed.contains(":")) {
-                String[] p = fixed.trim().split(":");
-                if (p.length >= 2) {
-                    int hh = Integer.parseInt(p[0]);
-                    int mm = Integer.parseInt(p[1]);
-
-                    Calendar c = Calendar.getInstance();
-                    c.setTimeInMillis(nowMs);
-                    c.set(Calendar.HOUR_OF_DAY, hh);
-                    c.set(Calendar.MINUTE, mm);
-                    c.set(Calendar.SECOND, 0);
-                    c.set(Calendar.MILLISECOND, 0);
-                    plannedMs = c.getTimeInMillis();
-                }
-            }
-
-            if (plannedMs > 0) {
-                long diffMs = nowMs - plannedMs;
-                Log.w(TAG, "checktime(fixed): planned=" + new java.util.Date(plannedMs)
-                        + " now=" + new java.util.Date(nowMs)
-                        + " diffMs=" + diffMs
-                        + " diffSec=" + (diffMs / 1000.0));
-            } else {
-                Log.w(TAG, "checktime: cannot compute plannedMs from fixed='" + fixed + "'");
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "checktime failed: " + t);
-        }
-
-
-        Log.w("AlarmReceiver",
-              "ONRECEIVE id=" + id +
-              " action=" + intent.getAction() +
-              " mode=" + mode +
-              " fixed=" + fixed +
-              " now=" + new java.util.Date(System.currentTimeMillis()));
-        Log.w("AlarmReceiver",
-        "nowMs=" + System.currentTimeMillis() +
-        " now=" + new java.util.Date(System.currentTimeMillis()));
-        long plannedMs = intent.getLongExtra(AlarmScheduler.EXTRA_TRIGGER_AT_MILLIS, -1L);
-        if (plannedMs > 0) {
-            long nowMs = System.currentTimeMillis();
-            long diffMs = nowMs - plannedMs;
-            Log.w("AlarmReceiver checktime",
-                  "plannedMs=" + plannedMs +
-                  " planned=" + new java.util.Date(plannedMs) +
-                  " nowMs=" + nowMs +
-                  " diffMs=" + diffMs +
-                  " diffSec=" + (diffMs/1000.0));
-        } else {
-            Log.w("AlarmReceiver  checktime", "plannedMs missing (EXTRA_TRIGGER_AT_MILLIS)");
-        }
 
         try {
             if (context == null || intent == null) {
@@ -117,28 +137,25 @@ public class AlarmReceiver extends BroadcastReceiver {
                     AlarmScheduler.EXTRA_REQUEST_ID,
                     intent.getIntExtra(AlarmScheduler.EXTRA_NOTIF_ID, -1)
             );
+            long now = System.currentTimeMillis();
+            long trig = intent.getLongExtra(AlarmScheduler.EXTRA_TRIGGER_AT_MILLIS, -1);
+            Log.w(TAG, "ONRECEIVE id=" + requestId + " now=" + now + " trig=" + trig + " lateBy=" + (now-trig) + "ms");
+
 
             final String soundName = intent.getStringExtra(AlarmScheduler.EXTRA_SOUND_NAME);
             final float volume01raw = intent.getFloatExtra(AlarmScheduler.EXTRA_VOLUME01, 1.0f);
             final float volume01 = Math.max(0f, Math.min(1f, volume01raw));
 
-            Log.e(TAG, "### onReceive ###"
-                    + " action=" + intent.getAction()
-                    + " requestId=" + requestId
-                    + " soundName=" + soundName
-                    + " vol=" + volume01
-                    + " sdk=" + Build.VERSION.SDK_INT
-                    + " time=" + System.currentTimeMillis()
-            );
-
             logAudioState(context);
-
-            // ✅ Notification anzeigen
             showNotification(context.getApplicationContext(), intent, requestId);
+            Log.w(TAG, "PLAY start id=" + requestId + " sound=" + soundName + " vol=" + volume01);
 
-            playShortBeep(context.getApplicationContext(), soundName, volume01, pr);
-            // ✅ HIER: nächsten Intervall-Termin planen
+            // Intervall weiterplanen (unabhängig vom Audio-Queue)
             AlarmScheduler.rescheduleNextFromIntent(context.getApplicationContext(), intent);
+
+            // Audio serialisieren
+            enqueuePlay(context.getApplicationContext(), soundName, volume01, requestId, pr);
+            return;
 
         } catch (Throwable t) {
             Log.e(TAG, "onReceive failed", t);
@@ -255,86 +272,83 @@ public class AlarmReceiver extends BroadcastReceiver {
         }
     }
 
-    private static void playShortBeep(Context ctx, String soundName, float volume01, PendingResult pr) {
+    private static void playShortBeep(Context ctx,
+                                      String soundName,
+                                      float volume01,
+                                      PendingResult pr,
+                                      Runnable onDone)
+    {
+        final java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean(false);
+
         final PowerManager.WakeLock[] wlRef = new PowerManager.WakeLock[1];
         final MediaPlayer[] mpRef = new MediaPlayer[1];
 
         try {
             wlRef[0] = acquireShortWakelock(ctx);
 
-            // 🔇 MUTE muss auch im Hintergrund respektiert werden
             volume01 = clamp01(volume01);
             if (volume01 <= 0.0f) {
                 Log.w(TAG, "playShortBeep: MUTED (vol=0) -> skip soundName=" + soundName);
                 releaseWakelock(wlRef[0]);
-                safeFinish(pr);
+                finishAndNextOnce(pr, onDone, done);
                 return;
             }
-int resId = 0;
+
+            int resId = 0;
             if (soundName != null && !soundName.trim().isEmpty()) {
                 resId = ctx.getResources().getIdentifier(soundName, "raw", ctx.getPackageName());
                 Log.w(TAG, "resolve raw '" + soundName + "' -> resId=" + resId);
             }
-
             if (resId == 0) {
                 Log.w(TAG, "raw resource not found for '" + soundName + "', fallback to 'bell'");
                 resId = ctx.getResources().getIdentifier("bell", "raw", ctx.getPackageName());
                 Log.w(TAG, "resolve raw 'bell' -> resId=" + resId);
             }
-
             if (resId == 0) {
-                Log.e(TAG, "No usable raw sound found (soundName=" + soundName + "). " +
-                        "Check: app/src/main/res/raw/bell.(mp3|wav|ogg)");
+                Log.e(TAG, "No usable raw sound found (soundName=" + soundName + ")");
                 releaseWakelock(wlRef[0]);
-                safeFinish(pr);
+                finishAndNextOnce(pr, onDone, done);
                 return;
             }
-
 
             MediaPlayer mp = createAlarmPlayerFromRaw(ctx, resId);
             mpRef[0] = mp;
 
             try { mp.setVolume(volume01, volume01); } catch (Throwable ignored) {}
 
-            Log.w(TAG, "playShortBeep: PREPARED. durationMs=" + safeDuration(mp)
-                    + " vol=" + volume01
-                    + " stopAfterMs=" + BEEP_MAX_MS);
-
             final Handler h = new Handler(Looper.getMainLooper());
 
-            mp.setOnPreparedListener(m -> Log.w(TAG, "MediaPlayer: onPrepared"));
             mp.setOnCompletionListener(m -> {
                 Log.w(TAG, "MediaPlayer: onCompletion");
                 safeStopRelease(mpRef[0]);
                 releaseWakelock(wlRef[0]);
-                safeFinish(pr);
+                finishAndNextOnce(pr, onDone, done);
             });
 
             mp.setOnErrorListener((m, what, extra) -> {
                 Log.e(TAG, "MediaPlayer: onError what=" + what + " extra=" + extra);
                 safeStopRelease(mpRef[0]);
                 releaseWakelock(wlRef[0]);
-                safeFinish(pr);
+                finishAndNextOnce(pr, onDone, done);
                 return true;
             });
 
-            // Hard stop (falls Sound länger ist oder Completion nicht kommt)
+            // Hard stop
             h.postDelayed(() -> {
                 Log.w(TAG, "playShortBeep: HARD STOP after " + BEEP_MAX_MS + "ms. isPlaying=" + safeIsPlaying(mpRef[0]));
                 safeStopRelease(mpRef[0]);
                 releaseWakelock(wlRef[0]);
-                safeFinish(pr);
+                finishAndNextOnce(pr, onDone, done);
             }, BEEP_MAX_MS);
 
             Log.w(TAG, "playShortBeep: START calling mp.start()");
             mp.start();
-            Log.w(TAG, "playShortBeep: START returned. isPlaying=" + safeIsPlaying(mp));
 
         } catch (Throwable t) {
             Log.e(TAG, "playShortBeep failed", t);
             safeStopRelease(mpRef[0]);
             releaseWakelock(wlRef[0]);
-            safeFinish(pr);
+            finishAndNextOnce(pr, onDone, done);
         }
     }
 

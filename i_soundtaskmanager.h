@@ -54,6 +54,8 @@ public:
 
     virtual bool cancel(int requestId) = 0;
     virtual bool isScheduled(int alarmId) const = 0;
+    virtual qint64 getNextAtMs(int alarmId) const = 0;
+
 
 signals:
     void logLine(const QString &line) const ;

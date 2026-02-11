@@ -56,6 +56,9 @@ public:
 
     Q_INVOKABLE bool isScheduled(int alarmId);
 
+    Q_INVOKABLE qint64 getNextAtMs(int alarmId);
+
+
 signals:
     void logLine(const QString &line);
 

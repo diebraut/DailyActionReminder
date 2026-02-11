@@ -64,6 +64,9 @@ public:
 
     bool isScheduled(int alarmId) const override;
 
+    qint64 getNextAtMs(int alarmId) const override;
+
+
 private:
     int allocId_locked();
     void freeId_locked(int id);

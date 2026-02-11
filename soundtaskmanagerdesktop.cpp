@@ -59,6 +59,8 @@ struct TaskState {
 
     // Active sound effect (kept alive while playing)
     QPointer<QSoundEffect> sfx;
+    // NEU: "nächster geplanter Zeitpunkt" für UI-Sync
+    qint64 nextAtMs = 0;
 
     // Parameters to reschedule after firing (fixed) or to enforce interval window
     QString mode;             // "fixed" or "interval"
@@ -304,6 +306,8 @@ static void scheduleOneShot(SoundTaskManagerDesktop *self, TaskState &st, int re
 {
     if (st.oneShot) stopAndDeleteLater(st.oneShot);
 
+    st.nextAtMs = triggerAtMillis;   // <<< NEU
+
     const qint64 delayMs = qMax<qint64>(0, triggerAtMillis - nowMs());
 
     QTimer *t = new QTimer(self);
@@ -535,3 +539,17 @@ bool SoundTaskManagerDesktop::cancel(int requestId)
     emit logLine(QString("[Desktop] cancel id=%1").arg(requestId));
     return true;
 }
+
+qint64 SoundTaskManagerDesktop::getNextAtMs(int alarmId) const
+{
+    if (alarmId <= 0) return 0;
+
+    auto itOuter = g_states.constFind(this);
+    if (itOuter == g_states.constEnd()) return 0;
+
+    auto it = itOuter.value().constFind(alarmId);
+    if (it == itOuter.value().constEnd()) return 0;
+
+    return it.value().nextAtMs;
+}
+

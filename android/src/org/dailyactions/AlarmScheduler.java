@@ -45,6 +45,54 @@ public class AlarmScheduler {
     private static void logW(String msg) { Log.w(TAG, msg); }
     private static void logE(String msg, Throwable t) { Log.e(TAG, msg, t); }
 
+    private static final String PREFS_NAME = "dailyactions_prefs";
+    private static String keyNextAt(int id) { return "nextAtMs_" + id; }
+
+    private static final String SP = "dailyactions_alarm";
+    private static String keyPhase(int id) { return "phase_" + id; }
+
+    private static void savePhaseMs(Context ctx, int id, long phaseMs) {
+        ctx.getSharedPreferences(SP, 0).edit().putLong(keyPhase(id), phaseMs).apply();
+    }
+
+    private static long loadPhaseMs(Context ctx, int id) {
+        return ctx.getSharedPreferences(SP, 0).getLong(keyPhase(id), 0L);
+    }
+
+    private static void saveNextAtMs(Context ctx, int requestId, long nextAtMs) {
+        try {
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putLong(keyNextAt(requestId), nextAtMs)
+                    .apply();
+        } catch (Throwable t) {
+            logE("saveNextAtMs failed", t);
+        }
+    }
+
+    private static void clearNextAtMs(Context ctx, int requestId) {
+        try {
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .remove(keyNextAt(requestId))
+                    .apply();
+        } catch (Throwable t) {
+            logE("clearNextAtMs failed", t);
+        }
+    }
+
+    // QML/C++ liest das beim Startup
+    public static long getNextAtMs(Context ctx, int requestId) {
+        if (ctx == null || requestId <= 0) return 0L;
+        try {
+            return ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .getLong(keyNextAt(requestId), 0L);
+        } catch (Throwable t) {
+            logE("getNextAtMs failed", t);
+            return 0L;
+        }
+    }
+
     // ============================================================================================
     // WIRD VON Qt BEIM START AUFGERUFEN – DARF NICHT ENTFERNT WERDEN
     // ============================================================================================
@@ -132,7 +180,7 @@ public class AlarmScheduler {
             return;
         }
         final long now = System.currentTimeMillis();
-        logI("NOW=" + new java.util.Date(now) + " TRIGGER=" + new java.util.Date(triggerAtMillis));
+        logI("NOW=" + new java.util.Date(now) + " TRIGGER=" + new java.util.Date(triggerAtMillis)  + "Diff=" + (triggerAtMillis-now) );
 
         final float v = clamp01(volume01);
         final long inMs = triggerAtMillis - now;
@@ -148,6 +196,11 @@ public class AlarmScheduler {
                 + " end=" + endTime
                 + " intervalSec=" + intervalSeconds
         );
+
+        if ("interval".equalsIgnoreCase(mode)) {
+            long phase = loadPhaseMs(ctx, requestId);
+            if (phase <= 0L) savePhaseMs(ctx, requestId, triggerAtMillis);
+        }
 
         try {
             AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
@@ -173,13 +226,12 @@ public class AlarmScheduler {
 
             // ✅ seconds (neu + legacy)
             i.putExtra(EXTRA_INTERVAL_SECONDS, intervalSeconds);
-            i.putExtra(EXTRA_INTERVAL_MINUTES, intervalSeconds);
-
-            // ✅ seconds (neu + legacy)
-             i.putExtra(EXTRA_INTERVAL_SECONDS, intervalSeconds);
-             i.putExtra(EXTRA_INTERVAL_MINUTES, intervalSeconds);
 
             i.putExtra(EXTRA_VOLUME01, v);
+
+            // ✅ WICHTIG: geplanten Trigger mitsenden (für phasenstabile Reschedules + UI-Sync)
+            i.putExtra(EXTRA_TRIGGER_AT_MILLIS, triggerAtMillis);
+
 
             PendingIntent pi = PendingIntent.getBroadcast(ctx, requestId, i, pendingIntentFlags());
 
@@ -190,10 +242,15 @@ public class AlarmScheduler {
                 am.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, pi);
                 logI("Alarm setExact(RTC_WAKEUP) scheduled.");
             }
-
+            // <<< NEU: nextAt persistieren (UI-Sync nach App-Neustart)
+            saveNextAtMs(ctx.getApplicationContext(), requestId, triggerAtMillis);
         } catch (Throwable t) {
             logE("scheduleWithParams failed", t);
         }
+    }
+
+    private static void clearPhase(Context ctx, int id) {
+        ctx.getSharedPreferences(SP, 0).edit().remove(keyPhase(id)).apply();
     }
 
     public static void cancel(Context ctx, int requestId) {
@@ -215,10 +272,13 @@ public class AlarmScheduler {
         if (pi != null) {
             am.cancel(pi);
             pi.cancel();                 // <<< wichtig
+            clearNextAtMs(ctx.getApplicationContext(), requestId);
         }
 
         PendingIntent pi2 = PendingIntent.getBroadcast(app, requestId, i, flags);
         logI("CANCEL after id=" + requestId + " piNow=" + (pi2 != null));
+        clearNextAtMs(ctx.getApplicationContext(), requestId);
+        clearPhase(ctx, requestId);
     }
 
     // --------------------------------------------------------------------------------------------
@@ -228,20 +288,18 @@ public class AlarmScheduler {
         if (ctx == null || intent == null) return;
 
         try {
+            final Context appCtx = ctx.getApplicationContext();
+
             final int requestId = intent.getIntExtra(EXTRA_REQUEST_ID,
                     intent.getIntExtra(EXTRA_NOTIF_ID, -1));
 
+            Log.w(TAG, "RESCHEDULE done id=" + requestId);
+
             final String mode = intent.getStringExtra(EXTRA_MODE);
-            if (!"interval".equalsIgnoreCase(mode)) {
-                logI("rescheduleNext: skip mode=" + mode + " id=" + requestId);
-                return;
-            }
+            if (!"interval".equalsIgnoreCase(mode)) return;
 
             final int intervalSec = readIntervalSeconds(intent);
-            if (requestId <= 0 || intervalSec <= 0) {
-                logW("rescheduleNext: invalid id/interval id=" + requestId + " intervalSec=" + intervalSec);
-                return;
-            }
+            if (requestId <= 0 || intervalSec <= 0) return;
 
             final String soundName = intent.getStringExtra(EXTRA_SOUND_NAME);
             final String title     = intent.getStringExtra(EXTRA_TITLE);
@@ -251,15 +309,39 @@ public class AlarmScheduler {
             final String startTime = intent.getStringExtra(EXTRA_START_TIME);
             final String endTime   = intent.getStringExtra(EXTRA_END_TIME);
 
-            final float vol01      = intent.getFloatExtra(EXTRA_VOLUME01, 1.0f);
+            final float vol01 = intent.getFloatExtra(EXTRA_VOLUME01, 1.0f);
 
-            long baseNow = System.currentTimeMillis() + 250;
-            long next = computeNextIntervalFireMs(baseNow, startTime, endTime, intervalSec);
+            final long now = System.currentTimeMillis();
+            final long intervalMs = intervalSec * 1000L;
 
-            logI("rescheduleNext: id=" + requestId + " next=" + next + " inMs=" + (next - System.currentTimeMillis()));
+            // Phase: MUSS beim ersten Schedule gesetzt sein (firstAt). Fallback nur wenn fehlt.
+            long phase = loadPhaseMs(appCtx, requestId);
+            if (phase <= 0L) {
+                phase = now; // Fallback: besser ist "firstAt" beim Start speichern!
+                savePhaseMs(appCtx, requestId, phase);
+            }
+
+            // 1) Nächster Tick strikt aus Phase-Raster (keine Minute-Rundung)
+            long next = computeNextFromPhase(now + 250, phase, intervalMs);
+
+            // 2) Start/End-Zeitfenster: falls next außerhalb, im selben Raster weiter schieben
+            //    (ohne das Raster zu zerstören!)
+            next = adjustToWindowByStepping(next, phase, intervalMs, startTime, endTime);
+
+            // Safety: nicht zu früh
+            if (next < now + 250) {
+                next = computeNextFromPhase(now + 250, phase, intervalMs);
+                next = adjustToWindowByStepping(next, phase, intervalMs, startTime, endTime);
+            }
+
+            logI("rescheduleNext: id=" + requestId
+                    + " phase=" + phase
+                    + " next=" + next
+                    + " inMs=" + (next - now)
+                    + " intervalSec=" + intervalSec);
 
             scheduleWithParams(
-                    ctx.getApplicationContext(),
+                    appCtx,
                     next,
                     (soundName != null) ? soundName : "bell",
                     requestId,
@@ -273,8 +355,75 @@ public class AlarmScheduler {
                     vol01
             );
 
+            saveNextAtMs(appCtx, requestId, next);
+
         } catch (Throwable t) {
             logE("rescheduleNextFromIntent failed", t);
+        }
+    }
+
+    private static long computeNextFromPhase(long now, long phase, long stepMs) {
+        if (stepMs <= 0) return now;
+        if (now <= phase) return phase;
+        long k = (now - phase + stepMs - 1) / stepMs; // ceil
+        return phase + k * stepMs;
+    }
+
+
+    /**
+     * Schiebt "next" nur in Schritten von intervalMs weiter, bis es im Fenster liegt.
+     * Raster bleibt immer phase + n*interval.
+     */
+    private static long adjustToWindowByStepping(long next, long phase, long intervalMs,
+                                                String startTime, String endTime) {
+        final int startMin = parseHHMMToMinutes(startTime); // -1 wenn leer/invalid
+        final int endMin   = parseHHMMToMinutes(endTime);   // -1 wenn leer/invalid
+
+        if (startMin < 0 && endMin < 0) return next; // kein Fenster
+
+        // Guard, damit keine Endlosschleife bei kaputten Inputs
+        for (int i = 0; i < 24 * 60 * 2; i++) { // max 2 Tage in steps
+            if (isWithinWindow(next, startMin, endMin)) return next;
+            next += intervalMs;
+        }
+        return next;
+    }
+
+    private static boolean isWithinWindow(long tMs, int startMin, int endMin) {
+        if (startMin < 0 && endMin < 0) return true;
+
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.setTimeInMillis(tMs);
+        int curMin = c.get(java.util.Calendar.HOUR_OF_DAY) * 60 + c.get(java.util.Calendar.MINUTE);
+
+        if (startMin >= 0 && endMin >= 0) {
+            if (startMin == endMin) return true; // "ganztägig" Interpretation
+            if (startMin < endMin) {
+                return curMin >= startMin && curMin < endMin;
+            } else {
+                // über Mitternacht (z.B. 22:00-06:00)
+                return (curMin >= startMin) || (curMin < endMin);
+            }
+        } else if (startMin >= 0) {
+            return curMin >= startMin;
+        } else { // endMin >= 0
+            return curMin < endMin;
+        }
+    }
+
+    private static int parseHHMMToMinutes(String s) {
+        try {
+            if (s == null) return -1;
+            s = s.trim();
+            if (s.isEmpty() || !s.contains(":")) return -1;
+            String[] p = s.split(":");
+            if (p.length < 2) return -1;
+            int hh = Integer.parseInt(p[0]);
+            int mm = Integer.parseInt(p[1]);
+            if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return -1;
+            return hh * 60 + mm;
+        } catch (Throwable t) {
+            return -1;
         }
     }
 
@@ -308,22 +457,6 @@ public class AlarmScheduler {
         return intent.getIntExtra(EXTRA_INTERVAL_MINUTES, 0);
     }
 
-    private static int parseHHMMToMinutes(String t) {
-        if (t == null) return 0;
-        String s = t.trim();
-        if (s.isEmpty()) return 0;
-        String[] p = s.split(":");
-        if (p.length < 2) return 0;
-
-        int h = 0, m = 0;
-        try { h = Integer.parseInt(p[0]); } catch (Throwable ignored) {}
-        try { m = Integer.parseInt(p[1]); } catch (Throwable ignored) {}
-
-        h = Math.max(0, Math.min(23, h));
-        m = Math.max(0, Math.min(59, m));
-        return h * 60 + m;
-    }
-
     private static long dateAtMinutes(long nowMs, int minutes) {
         Calendar c = Calendar.getInstance();
         c.setTimeInMillis(nowMs);
@@ -341,30 +474,35 @@ public class AlarmScheduler {
      * - nach Ende -> nächster Tag Start
      * - im Fenster -> now + intervalSeconds (wenn >= end -> nächster Tag Start)
      */
-    private static long computeNextIntervalFireMs(long nowMs, String startTime, String endTime, int intervalSeconds) {
-        int startMin = parseHHMMToMinutes(startTime);
-        int endMin   = parseHHMMToMinutes(endTime);
+     static long computeNextIntervalFireMs(long nowMs, String startTime, String endTime, int intervalSeconds) {
+         final int startMin = parseHHMMToMinutes(startTime);
+         final int endMin   = parseHHMMToMinutes(endTime);
 
-        long start = dateAtMinutes(nowMs, startMin);
-        long end   = dateAtMinutes(nowMs, endMin);
+         final long dayMs = 24L * 60L * 60L * 1000L;
 
-        long dayMs = 24L * 60L * 60L * 1000L;
+         long start = dateAtMinutes(nowMs, startMin);
+         long end   = dateAtMinutes(nowMs, endMin);
 
-        // start==end => ganzer Tag
-        if (endMin == startMin) {
-            end += dayMs;
-        } else if (endMin < startMin) {
-            // über Mitternacht
-            end += dayMs;
-        }
+         // start==end => ganzer Tag
+         if (endMin == startMin) {
+             end += dayMs;
+         } else if (endMin < startMin) {
+             // über Mitternacht
+             end += dayMs;
+         }
 
-        if (nowMs < start) return start;
-        if (nowMs >= end)  return start + dayMs;
+         // außerhalb Fenster
+         if (nowMs < start) return start;
+         if (nowMs >= end)  return start + dayMs;
 
-        long intervalMs = Math.max(1, intervalSeconds) * 1000L;
-        long next = nowMs + intervalMs;
+         final long intervalMs = Math.max(1, intervalSeconds) * 1000L;
 
-        if (next >= end) return start + dayMs;
-        return next;
-    }
+         // ✅ auf Tick ausrichten: nächster Tick ab "start"
+         long elapsed = nowMs - start;
+         long k = elapsed / intervalMs;              // aktueller Tick-Index
+         long next = start + (k + 1) * intervalMs;   // nächster Tick
+
+         if (next >= end) return start + dayMs;
+         return next;
+     }
 }
