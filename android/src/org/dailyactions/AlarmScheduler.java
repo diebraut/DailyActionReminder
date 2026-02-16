@@ -180,7 +180,7 @@ public class AlarmScheduler {
             return;
         }
         final long now = System.currentTimeMillis();
-        logI("NOW=" + new java.util.Date(now) + " TRIGGER=" + new java.util.Date(triggerAtMillis)  + "Diff=" + (triggerAtMillis-now) );
+        logI("NOW=" + new java.util.Date(now) + " TRIGGER=" + new java.util.Date(triggerAtMillis));
 
         final float v = clamp01(volume01);
         final long inMs = triggerAtMillis - now;
@@ -196,6 +196,25 @@ public class AlarmScheduler {
                 + " end=" + endTime
                 + " intervalSec=" + intervalSeconds
         );
+        // Keep a persistent copy of all parameters needed to execute this action (Receiver side, survives process death)
+        try {
+            AlarmReceiver.addPlannedAktions(
+                    ctx.getApplicationContext(),
+                    requestId,
+                    triggerAtMillis,
+                    soundName,
+                    v,
+                    title,
+                    actionText,
+                    mode,
+                    fixedTime,
+                    startTime,
+                    endTime,
+                    intervalSeconds
+            );
+        } catch (Throwable t) {
+            logE("ExpectedActions addPlannedAktions failed", t);
+        }
 
         if ("interval".equalsIgnoreCase(mode)) {
             long phase = loadPhaseMs(ctx, requestId);
@@ -257,33 +276,30 @@ public class AlarmScheduler {
         if (ctx == null) return;
         Context app = ctx.getApplicationContext();
 
+        // Receiver-side registry cleanup
+        try { AlarmReceiver.removeAktions(app, requestId); } catch (Throwable ignored) {}
+
         AlarmManager am = (AlarmManager) app.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
 
         Intent i = new Intent(app, AlarmReceiver.class);
-        i.setAction("org.dailyactions.ALARM_" + requestId);
+        i.setAction("org.dailyactions.ALARM_" + requestId); // MUSS exakt zum Schedule-Intent passen
 
         int flags = PendingIntent.FLAG_NO_CREATE;
-        if (android.os.Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+        if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
 
         PendingIntent pi = PendingIntent.getBroadcast(app, requestId, i, flags);
-
         logI("CANCEL id=" + requestId + " pi=" + (pi != null));
+
         if (pi != null) {
             am.cancel(pi);
-            pi.cancel();                 // <<< wichtig
-            clearNextAtMs(ctx.getApplicationContext(), requestId);
+            pi.cancel();
         }
 
-        PendingIntent pi2 = PendingIntent.getBroadcast(app, requestId, i, flags);
-        logI("CANCEL after id=" + requestId + " piNow=" + (pi2 != null));
-        clearNextAtMs(ctx.getApplicationContext(), requestId);
-        clearPhase(ctx, requestId);
+        clearNextAtMs(app, requestId);
+        clearPhase(app, requestId);
     }
 
-    // --------------------------------------------------------------------------------------------
-    // Reschedule (wird vom AlarmReceiver nach jedem Trigger aufgerufen)
-    // --------------------------------------------------------------------------------------------
     public static void rescheduleNextFromIntent(Context ctx, Intent intent) {
         if (ctx == null || intent == null) return;
 
@@ -311,34 +327,25 @@ public class AlarmScheduler {
 
             final float vol01 = intent.getFloatExtra(EXTRA_VOLUME01, 1.0f);
 
-            final long now = System.currentTimeMillis();
             final long intervalMs = intervalSec * 1000L;
 
-            // Phase: MUSS beim ersten Schedule gesetzt sein (firstAt). Fallback nur wenn fehlt.
-            long phase = loadPhaseMs(appCtx, requestId);
-            if (phase <= 0L) {
-                phase = now; // Fallback: besser ist "firstAt" beim Start speichern!
-                savePhaseMs(appCtx, requestId, phase);
+            // 🔴 DAS IST DER WICHTIGSTE FIX
+            final long lastPlannedTrigger =
+                    intent.getLongExtra(EXTRA_TRIGGER_AT_MILLIS, -1L);
+
+            if (lastPlannedTrigger <= 0) {
+                logW("rescheduleNext: missing EXTRA_TRIGGER_AT_MILLIS -> fallback abort id=" + requestId);
+                return;
             }
 
-            // 1) Nächster Tick strikt aus Phase-Raster (keine Minute-Rundung)
-            long next = computeNextFromPhase(now + 250, phase, intervalMs);
-
-            // 2) Start/End-Zeitfenster: falls next außerhalb, im selben Raster weiter schieben
-            //    (ohne das Raster zu zerstören!)
-            next = adjustToWindowByStepping(next, phase, intervalMs, startTime, endTime);
-
-            // Safety: nicht zu früh
-            if (next < now + 250) {
-                next = computeNextFromPhase(now + 250, phase, intervalMs);
-                next = adjustToWindowByStepping(next, phase, intervalMs, startTime, endTime);
-            }
+            // ✅ Phase-stabil: nächster Tick = letzter geplanter Tick + Intervall
+            final long next = lastPlannedTrigger + intervalMs;
 
             logI("rescheduleNext: id=" + requestId
-                    + " phase=" + phase
+                    + " lastPlanned=" + lastPlannedTrigger
                     + " next=" + next
-                    + " inMs=" + (next - now)
-                    + " intervalSec=" + intervalSec);
+                    + " delta=" + intervalMs
+            );
 
             scheduleWithParams(
                     appCtx,
@@ -367,26 +374,6 @@ public class AlarmScheduler {
         if (now <= phase) return phase;
         long k = (now - phase + stepMs - 1) / stepMs; // ceil
         return phase + k * stepMs;
-    }
-
-
-    /**
-     * Schiebt "next" nur in Schritten von intervalMs weiter, bis es im Fenster liegt.
-     * Raster bleibt immer phase + n*interval.
-     */
-    private static long adjustToWindowByStepping(long next, long phase, long intervalMs,
-                                                String startTime, String endTime) {
-        final int startMin = parseHHMMToMinutes(startTime); // -1 wenn leer/invalid
-        final int endMin   = parseHHMMToMinutes(endTime);   // -1 wenn leer/invalid
-
-        if (startMin < 0 && endMin < 0) return next; // kein Fenster
-
-        // Guard, damit keine Endlosschleife bei kaputten Inputs
-        for (int i = 0; i < 24 * 60 * 2; i++) { // max 2 Tage in steps
-            if (isWithinWindow(next, startMin, endMin)) return next;
-            next += intervalMs;
-        }
-        return next;
     }
 
     private static boolean isWithinWindow(long tMs, int startMin, int endMin) {
