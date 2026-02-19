@@ -300,6 +300,30 @@ public class AlarmScheduler {
         clearPhase(app, requestId);
     }
 
+    public static void cancelAll(Context ctx) {
+        if (ctx == null) return;
+        Context app = ctx.getApplicationContext();
+
+        // 1) Alle IDs holen (Snapshot)
+        int[] ids;
+        try {
+            ids = AlarmReceiver.listActionIds(app);
+        } catch (Throwable t) {
+            ids = new int[0];
+        }
+
+        // 2) Jeden Alarm wie cancel(...) entfernen
+        for (int id : ids) {
+            try { cancel(app, id); } catch (Throwable ignored) {}
+        }
+
+        // 3) Receiver-side Registry komplett leeren (Sicherheit)
+        try { AlarmReceiver.clearAllExpectedActions(app); } catch (Throwable ignored) {}
+
+        logI("CANCEL_ALL count=" + ids.length);
+    }
+
+
     public static void rescheduleNextFromIntent(Context ctx, Intent intent) {
         if (ctx == null || intent == null) return;
 

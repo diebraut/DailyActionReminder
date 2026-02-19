@@ -140,23 +140,41 @@ public class AlarmReceiver extends BroadcastReceiver {
      */
     public static void removeAktions(Context ctx, int requestId) {
         if (ctx == null) {
-            Log.w(TAG, "ExpectedActions: remove aborted (ctx==null) id=" + requestId);
+            Log.w(TAG, "ExpectedActionsXX: remove aborted (ctx==null) id=" + requestId);
             return;
         }
         EXPECTED_ACTIONS.remove(ctx.getApplicationContext(), requestId);
-        Log.w(TAG, "ExpectedActions: remove id=" + requestId);
+        Log.w(TAG, "ExpectedActions: removeXX id=" + requestId);
     }
 
     /** Backwards-compatible overload (memory-only). */
     public static void removeAktions(int requestId) {
         EXPECTED_ACTIONS.removeInMemoryOnly(requestId);
-        Log.w(TAG, "ExpectedActions: remove (memory-only) id=" + requestId);
+        Log.w(TAG, "ExpectedActionsXX: remove (memory-only) id=" + requestId);
     }
 
     public static void clearAllExpectedActions(Context ctx) {
         if (ctx == null) return;
         EXPECTED_ACTIONS.clearAll(ctx.getApplicationContext());
     }
+
+    public static int[] listActionIds(Context ctx) {
+        if (ctx == null) return new int[0];
+        Context app = ctx.getApplicationContext();
+
+        try {
+            java.util.List<ExpectedActions.Action> all = EXPECTED_ACTIONS.getAll(app);
+            int[] ids = new int[all.size()];
+            for (int i = 0; i < all.size(); i++) {
+                ids[i] = all.get(i).requestId;
+            }
+            return ids;
+        } catch (Throwable t) {
+            Log.w(TAG, "listActionIds failed: " + t);
+            return new int[0];
+        }
+    }
+
 
     /**
      * Optional helper: fetch a planned action snapshot (can be null).
@@ -226,12 +244,14 @@ public class AlarmReceiver extends BroadcastReceiver {
 
 
         private synchronized void put(Context ctx, Action a) {
+            Log.w(TAG, "ExpectedActionsXX (put): put Action id=" + a.requestId);
             a.isExecuted = false;        // NEU: beim (re)Schedule reset
             map.put(a.requestId, a);
             persistLocked(ctx, a);
         }
 
         private synchronized void putInMemoryOnly(Action a) {
+            Log.w(TAG, "ExpectedActionsXX (putInMemory): put Action id=" + a.requestId);
             a.isExecuted = false;        // NEU: beim (re)Schedule reset
             map.put(a.requestId, a);
         }
@@ -341,7 +361,7 @@ public class AlarmReceiver extends BroadcastReceiver {
                                        long nowMs,
                                        long windowMs,
                                        ActionRunner runner) {
-             final long windowStart = nowMs - 500;
+             final long windowStart = nowMs - 2000;
              final long windowEnd   = nowMs + windowMs;
 
              // 1) immer: current id behandeln (damit handledByExpected=true wird)
@@ -366,7 +386,8 @@ public class AlarmReceiver extends BroadcastReceiver {
 
              // A) wenn FIRST schon executed: nichts weiter (oder trotzdem scan, je nach Wunsch)
              if (!first.isExecuted) {
-                 boolean inWindow = (first.triggerAtMillis >= windowStart && first.triggerAtMillis <= windowEnd);
+                 boolean inWindow = (first.requestId == requestId) ||
+                                    (first.triggerAtMillis >= windowStart && first.triggerAtMillis <= windowEnd);
                  if (inWindow) runFull.accept(first);
                  else return true; // wie von dir gewünscht: nur return true
              }
@@ -381,7 +402,6 @@ public class AlarmReceiver extends BroadcastReceiver {
              }
              return true;
          }
-
 
         private void persistLocked(Context ctx, Action a) {
             try {
@@ -612,6 +632,7 @@ public class AlarmReceiver extends BroadcastReceiver {
                     Log.w(TAG, "ExpectedActionsXX: execut id=" + a.requestId);
 
                     // Interval reschedule (does nothing for fixed-time)
+                    Log.w(TAG, "ExpectedActionsXX: rescheduleNextFromIntent id=" + a.requestId);
                     AlarmScheduler.rescheduleNextFromIntent(appCtx, ii);
 
                     // Play sequentially

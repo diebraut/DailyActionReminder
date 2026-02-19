@@ -109,6 +109,7 @@ static QDateTime dateAtMinutes(const QDateTime &baseLocal, int minutes)
 }
 
 // Next trigger within interval window [start, end), possibly spanning midnight
+// Desktop soll "ab jetzt + interval" laufen (nicht auf HH:MM-Raster runden)
 static qint64 computeNextIntervalFireMs(qint64 nowMillis,
                                         const QString &startTime,
                                         const QString &endTime,
@@ -124,26 +125,30 @@ static qint64 computeNextIntervalFireMs(qint64 nowMillis,
     QDateTime start = dateAtMinutes(now, startMin);
     QDateTime end   = dateAtMinutes(now, endMin);
 
+    // window spans midnight (or same -> treat as span)
     if (endMin == startMin || endMin < startMin)
         end = end.addDays(1);
 
+    // before window -> first fire at window start
     if (now < start)
         return start.toMSecsSinceEpoch();
 
+    // after window -> next day start
     if (now >= end) {
         start = start.addDays(1);
         return start.toMSecsSinceEpoch();
     }
 
+    // inside window -> fire "interval" seconds from NOW (no rounding)
     const qint64 intervalMs = qMax<qint64>(1000, qint64(intervalSeconds) * 1000);
-    const qint64 sinceStart = now.toMSecsSinceEpoch() - start.toMSecsSinceEpoch();
-    const qint64 steps = (sinceStart + intervalMs - 1) / intervalMs; // ceil
-    qint64 next = start.toMSecsSinceEpoch() + steps * intervalMs;
-    if (next < start.toMSecsSinceEpoch()) next = start.toMSecsSinceEpoch();
+    qint64 next = now.toMSecsSinceEpoch() + intervalMs;
+
+    // if that would leave the window -> next day start
     if (next >= end.toMSecsSinceEpoch()) {
         start = start.addDays(1);
         next = start.toMSecsSinceEpoch();
     }
+
     return next;
 }
 
@@ -328,8 +333,10 @@ static void scheduleOneShot(SoundTaskManagerDesktop *self, TaskState &st, int re
         if (st.mode == "fixed") {
             const qint64 next = computeNextFixedFireMs(nowMs(), st.fixedTime);
             scheduleOneShot(self, st, requestId, next);
+        } else { // "interval"
+            const qint64 next = computeNextIntervalFireMs(nowMs(), st.startTime, st.endTime, st.intervalSeconds);
+            scheduleOneShot(self, st, requestId, next);
         }
-        // for "interval": repeating timer handles subsequent plays within window
     });
 
     t->start();
@@ -435,27 +442,10 @@ int SoundTaskManagerDesktop::startIntervalSoundTask(const QString &rawSound,
 }
 
 
-
 void SoundTaskManagerDesktop::cancelAlarmTask(int alarmId)
 {
     clearState(this, alarmId);
     emit logLine(QString("[Desktop] cancelAlarmTask id=%1").arg(alarmId));
-}
-
-bool SoundTaskManagerDesktop::schedule(qint64 triggerAtMillis,
-                                       const QString &soundName,
-                                       int requestId,
-                                       const QString &title,
-                                       const QString &text,
-                                       const QString &mode,
-                                       const QString &fixedTime,
-                                       const QString &startTime,
-                                       const QString &endTime,
-                                       int intervalSeconds,
-                                       float volume01)
-{
-    return scheduleWithParams(triggerAtMillis, soundName, requestId, title, text, mode,
-                              fixedTime, startTime, endTime, intervalSeconds, volume01);
 }
 
 bool SoundTaskManagerDesktop::scheduleWithParams(qint64 triggerAtMillis,
@@ -485,8 +475,9 @@ bool SoundTaskManagerDesktop::scheduleWithParams(qint64 triggerAtMillis,
     st->volume01 = volume01;
 
     if (st->mode == "interval") {
-        const qint64 next = computeNextIntervalFireMs(nowMs(), startTime, endTime, qMax(1, intervalSeconds));
-        scheduleOneShot(this, *st, requestId, next);
+        //const qint64 next = computeNextIntervalFireMs(nowMs(), startTime, endTime, qMax(1, intervalSeconds));
+        scheduleOneShot(this, *st, requestId, triggerAtMillis);
+        Q_INVOKABLE bool cancel(int requestId);
 
         // repeating timer for in-window ticks
         QTimer *rep = new QTimer(this);
@@ -537,6 +528,27 @@ bool SoundTaskManagerDesktop::cancel(int requestId)
 {
     clearState(this, requestId);
     emit logLine(QString("[Desktop] cancel id=%1").arg(requestId));
+    return true;
+}
+
+bool SoundTaskManagerDesktop::cancelAll()
+{
+    auto itOuter = g_states.find(this);
+    if (itOuter != g_states.end()) {
+        auto &map = itOuter.value();
+
+        // Alle einzelnen States sauber löschen (Timer + sfx stoppen)
+        for (auto it = map.begin(); it != map.end(); ++it) {
+            TaskState &st = it.value();
+            if (st.oneShot)   stopAndDeleteLater(st.oneShot);
+            if (st.repeating) stopAndDeleteLater(st.repeating);
+            if (st.sfx)       stopAndDeleteLater(st.sfx);
+        }
+
+        g_states.erase(itOuter);
+    }
+
+    emit logLine("[Desktop] cancelAll");
     return true;
 }
 

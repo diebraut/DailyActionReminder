@@ -29,18 +29,6 @@ public:
 
     void cancelAlarmTask(int alarmId) override;
 
-    bool schedule(qint64 triggerAtMillis,
-                  const QString &soundName,
-                  int requestId,
-                  const QString &title,
-                  const QString &text,
-                  const QString &mode,
-                  const QString &fixedTime,
-                  const QString &startTime,
-                  const QString &endTime,
-                  int intervalSeconds,
-                  float volume01) override;
-
     bool scheduleWithParams(qint64 triggerAtMillis,
                             const QString &soundName,
                             int requestId,
@@ -54,6 +42,8 @@ public:
                             float volume01) override;
 
     bool cancel(int requestId) override;
+
+    bool cancelAll() override;
 
     bool isScheduled(int alarmId) const override;
 

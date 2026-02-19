@@ -59,9 +59,9 @@ static void myMessageHandler(QtMsgType type, const QMessageLogContext &ctx, cons
     if (!inited) {
         inited = true;
         const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        QDir().mkpath(dir);
+        (void)QDir().mkpath(dir);
         f.setFileName(dir + "/qml.log");
-        f.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+        (void)f.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
     }
     if (f.isOpen()) {
         QTextStream out(&f);

@@ -18,30 +18,16 @@ qt_add_executable(appDailyActionReminder
     soundtaskmanagerdesktop.h soundtaskmanagerdesktop.cpp
 )
 
-# Android-Only Quellen (JNI / android/log.h) -> nur auf Android bauen
-if(ANDROID)
-    target_sources(appDailyActionReminder PRIVATE
-
-
-    )
-    # für __android_log_vprint / logcat
-    target_link_libraries(appDailyActionReminder PRIVATE log)
-endif()
-
-# QML-Modul (QML wird unter qrc:/qt/qml/DailyActionReminder/... abgelegt)
+# QML-Modul (NUR QML-Dateien hier rein; keine Android-C++ SOURCES!)
 qt_add_qml_module(appDailyActionReminder
     URI DailyActionReminder
     QML_FILES
         Main.qml
         ActionDelegate.qml
-        QML_FILES TestScheduling.qml
-        SOURCES
-        SOURCES
-        SOURCES soundtaskmanagerandroid.h
-        SOURCES soundtaskmanagerandroid.cpp
+        TestScheduling.qml
 )
 
-# ✅ Variante B: Root-QRC, damit qrc:/sounds/... weiter funktioniert
+# Root-QRC, damit qrc:/sounds/... funktioniert
 qt_add_resources(appDailyActionReminder "app_root_qrc"
     PREFIX "/"
     FILES
@@ -57,13 +43,6 @@ qt_add_resources(appDailyActionReminder "app_root_qrc"
         sounds/wood_tap.wav
 )
 
-set_target_properties(appDailyActionReminder PROPERTIES
-    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
-    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
-    MACOSX_BUNDLE TRUE
-    WIN32_EXECUTABLE TRUE
-)
-
 target_link_libraries(appDailyActionReminder
     PRIVATE
         Qt6::Quick
@@ -71,15 +50,32 @@ target_link_libraries(appDailyActionReminder
         Qt6::Multimedia
 )
 
+set_target_properties(appDailyActionReminder PROPERTIES
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+    MACOSX_BUNDLE TRUE
+    WIN32_EXECUTABLE TRUE
+)
+
+# Android-only: C++ Quellen + Package-Dir
+if(ANDROID)
+    target_sources(appDailyActionReminder PRIVATE
+        soundtaskmanagerandroid.h
+        soundtaskmanagerandroid.cpp
+    )
+
+    # für __android_log_* (logcat)
+    target_link_libraries(appDailyActionReminder PRIVATE log)
+
+    # Java/Manifest/Gradle unter ./android (android/src/org/dailyactions/...)
+    set_target_properties(appDailyActionReminder PROPERTIES
+        QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
+    )
+endif()
+
 include(GNUInstallDirs)
 install(TARGETS appDailyActionReminder
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-
-if(ANDROID)
-    set_target_properties(appDailyActionReminder PROPERTIES
-        QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
-    )
-endif()

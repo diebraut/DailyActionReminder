@@ -28,18 +28,6 @@ public:
 
     virtual void cancelAlarmTask(int alarmId) = 0;
 
-    virtual bool schedule(qint64 triggerAtMillis,
-                          const QString &soundName,
-                          int requestId,
-                          const QString &title,
-                          const QString &text,
-                          const QString &mode,
-                          const QString &fixedTime,
-                          const QString &startTime,
-                          const QString &endTime,
-                          int intervalSeconds,
-                          float volume01) = 0;
-
     virtual bool scheduleWithParams(qint64 triggerAtMillis,
                                     const QString &soundName,
                                     int requestId,
@@ -53,6 +41,7 @@ public:
                                     float volume01) = 0;
 
     virtual bool cancel(int requestId) = 0;
+    virtual bool cancelAll() = 0;
     virtual bool isScheduled(int alarmId) const = 0;
     virtual qint64 getNextAtMs(int alarmId) const = 0;
 

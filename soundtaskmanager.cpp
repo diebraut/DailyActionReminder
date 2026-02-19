@@ -38,22 +38,6 @@ void SoundTaskManager::cancelAlarmTask(int alarmId)
     m_impl->cancelAlarmTask(alarmId);
 }
 
-bool SoundTaskManager::schedule(qint64 triggerAtMillis,
-                                const QString &soundName,
-                                int requestId,
-                                const QString &title,
-                                const QString &text,
-                                const QString &mode,
-                                const QString &fixedTime,
-                                const QString &startTime,
-                                const QString &endTime,
-                                int intervalSeconds,
-                                float volume01)
-{
-    return m_impl->schedule(triggerAtMillis, soundName, requestId, title, text, mode,
-                            fixedTime, startTime, endTime, intervalSeconds, volume01);
-}
-
 bool SoundTaskManager::scheduleWithParams(qint64 triggerAtMillis,
                                           const QString &soundName,
                                           int requestId,
@@ -74,6 +58,12 @@ bool SoundTaskManager::cancel(int requestId)
 {
     return m_impl->cancel(requestId);
 }
+
+bool SoundTaskManager::cancelAll()
+{
+    return m_impl->cancelAll();
+}
+
 
 bool SoundTaskManager::isScheduled(int alarmId)
 {

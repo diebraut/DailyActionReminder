@@ -28,17 +28,6 @@ public:
 
     Q_INVOKABLE void cancelAlarmTask(int alarmId);
 
-    Q_INVOKABLE bool schedule(qint64 triggerAtMillis,
-                              const QString &soundName,
-                              int requestId,
-                              const QString &title,
-                              const QString &text,
-                              const QString &mode,
-                              const QString &fixedTime,
-                              const QString &startTime,
-                              const QString &endTime,
-                              int intervalSeconds,
-                              float volume01 = 1.0f);
 
     Q_INVOKABLE bool scheduleWithParams(qint64 triggerAtMillis,
                                         const QString &soundName,
@@ -53,6 +42,8 @@ public:
                                         float volume01 = 1.0f);
 
     Q_INVOKABLE bool cancel(int requestId);
+
+    Q_INVOKABLE bool cancelAll();
 
     Q_INVOKABLE bool isScheduled(int alarmId);
 

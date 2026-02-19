@@ -11,6 +11,7 @@
 #include <QJniEnvironment>
 #include <cstdarg>
 
+#include <QSettings>
 
 static QJniObject getQtActivity()
 {
@@ -96,15 +97,12 @@ void SoundTaskManagerAndroid::ensure()
 
 int SoundTaskManagerAndroid::allocId_locked()
 {
-    if (!m_freeIds.isEmpty()) {
-        auto it = m_freeIds.begin();
-        const int id = *it;
-        m_freeIds.erase(it);
-        m_activeIds.insert(id);
-        return id;
-    }
     const int id = m_nextId++;
     m_activeIds.insert(id);
+
+    QSettings s;
+    s.setValue(QStringLiteral("SoundTaskManagerAndroid/nextId"), m_nextId);
+
     return id;
 }
 
@@ -123,8 +121,6 @@ void SoundTaskManagerAndroid::freeId_locked(int id)
             t->deleteLater();
         }
     }
-
-    m_freeIds.insert(id);
 }
 
 int SoundTaskManagerAndroid::allocId()
@@ -167,24 +163,6 @@ void SoundTaskManagerAndroid::armAutoFreeFixed(int id, qint64 fixedTimeMs)
     });
 
     t->start(static_cast<int>(std::min<qint64>(delayMs, std::numeric_limits<int>::max())));
-}
-
-// -------------------- Scheduling wrappers --------------------
-
-bool SoundTaskManagerAndroid::schedule(qint64 triggerAtMillis,
-                                       const QString &soundName,
-                                       int requestId,
-                                       const QString &title,
-                                       const QString &text,
-                                       const QString &mode,
-                                       const QString &fixedTime,
-                                       const QString &startTime,
-                                       const QString &endTime,
-                                       int intervalSeconds,
-                                       float volume01)
-{
-    return scheduleWithParams(triggerAtMillis, soundName, requestId, title, text,
-                              mode, fixedTime, startTime, endTime, intervalSeconds, volume01);
 }
 
 bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
@@ -254,6 +232,47 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
     emit logLine(ok ? "scheduleWithParams(): OK" : "scheduleWithParams(): EXCEPTION");
     return ok;
 }
+
+bool SoundTaskManagerAndroid::cancelAll()
+{
+    QJniObject activity = getQtActivity();
+    if (!activity.isValid()) {
+        alogW("cancelAll(): QtNative.activity() invalid");
+        return false;
+    }
+
+    alogW("cancelAll(): calling AlarmScheduler.cancelAll(ctx)");
+
+    QJniObject::callStaticMethod<void>(
+        "org/dailyactions/AlarmScheduler",
+        "cancelAll",
+        "(Landroid/content/Context;)V",
+        activity.object<jobject>()
+        );
+
+    const bool ok = clearJniException("cancelAll");
+
+    // C++-seitigen Zustand komplett leeren
+    {
+        QMutexLocker lk(&m_mutex);
+
+        // Timer stoppen/entsorgen
+        for (auto it = m_autoFreeTimers.begin(); it != m_autoFreeTimers.end(); ++it) {
+            if (QTimer *t = it.value()) {
+                t->stop();
+                t->deleteLater();
+            }
+        }
+        m_autoFreeTimers.clear();
+
+        m_activeIds.clear();
+        m_intervalIds.clear();
+    }
+
+    alogW(ok ? "cancelAll(): OK" : "cancelAll(): EXCEPTION");
+    return ok;
+}
+
 
 bool SoundTaskManagerAndroid::cancel(int requestId)
 {

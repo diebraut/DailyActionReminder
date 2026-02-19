@@ -36,18 +36,6 @@ public:
 
     void cancelAlarmTask(int alarmId) override;
 
-    bool schedule(qint64 triggerAtMillis,
-                  const QString &soundName,
-                  int requestId,
-                  const QString &title,
-                  const QString &text,
-                  const QString &mode,
-                  const QString &fixedTime,
-                  const QString &startTime,
-                  const QString &endTime,
-                  int intervalSeconds,
-                  float volume01) override;
-
     bool scheduleWithParams(qint64 triggerAtMillis,
                             const QString &soundName,
                             int requestId,
@@ -61,6 +49,8 @@ public:
                             float volume01) override;
 
     bool cancel(int requestId) override;
+
+    bool cancelAll() override;
 
     bool isScheduled(int alarmId) const override;
 
@@ -82,7 +72,6 @@ private:
 private:
     mutable QMutex m_mutex;
     int m_nextId = 777001;
-    QSet<int> m_freeIds;
     QSet<int> m_activeIds;
     QSet<int> m_intervalIds;
     QHash<int, QTimer*> m_autoFreeTimers;

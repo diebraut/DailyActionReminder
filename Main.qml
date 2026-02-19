@@ -304,6 +304,63 @@ ApplicationWindow {
         }
     }
 
+    function rescheduleExistingForIndexKeepNextAt(idx) {
+        if (idx < 0 || idx >= actionModel.count) return false;
+
+        const o = actionModel.get(idx);
+        const id = (typeof o.alarmId === "number") ? o.alarmId : 0;
+        if (id <= 0) return false;
+
+        const nextAt = SoundTaskManager.getNextAtMs(id);
+        if (!nextAt || nextAt <= 0) return false;   // wichtig
+
+        const enabled = (o.soundEnabled === undefined) ? true : !!o.soundEnabled;
+        const baseVol = (typeof o.volume === "number" && !isNaN(o.volume)) ? o.volume : 1.0;
+        const effectiveVol = (!app.allSoundsDisabled && enabled)
+                ? Math.max(0.0, Math.min(1.0, baseVol))
+                : 0.0;   // disable => stumm, aber Timer bleibt
+
+        const rawSound = soundRawForName(o.sound);
+        const txt = (typeof o.text === "string" && o.text.length > 0) ? o.text : "Reminder";
+        const mode = (o.mode || "fixed");
+
+        if (mode === "fixed") {
+            SoundTaskManager.scheduleWithParams(
+                nextAt, rawSound, id,
+                "DailyActions", txt,
+                "fixedTime",
+                o.fixedTime || "",
+                "", "",
+                0,
+                effectiveVol
+            );
+            return true;
+        }
+
+        if (mode === "interval") {
+            const intervalMinutes = (typeof o.intervalMinutes === "number")
+                    ? o.intervalMinutes
+                    : parseInt(o.intervalMinutes || 0, 10);
+            const intervalSec = (intervalMinutes > 0) ? intervalMinutes * 60 : 0;
+            if (intervalSec <= 0) return false;
+
+            SoundTaskManager.scheduleWithParams(
+                nextAt, rawSound, id,
+                "DailyActions", txt,
+                "interval",
+                "",
+                o.startTime || "",
+                o.endTime || "",
+                intervalSec,
+                effectiveVol
+            );
+            syncUiFromAndroidNextAtOnStartup()
+            return true;
+        }
+
+        return false;
+    }
+
     function loadDefaults() {
         actionModel.clear()
         actionModel.append({
@@ -337,6 +394,9 @@ ApplicationWindow {
     }
 
     function setRole(idx, role, value) {
+        const cur = actionModel.get(idx)[role]
+        if (cur === value) return
+
         if (idx < 0 || idx >= actionModel.count) return
 
         actionModel.setProperty(idx, role, value)
@@ -364,8 +424,10 @@ ApplicationWindow {
         if (actionsRunning && (role === "sound" || role === "soundEnabled" || role === "volume")) {
             dbg("[main] sound changed", "role=", role)
             Qt.callLater(function() {
+                dbg("[main] sound changed start callLater")
                 // 1) Wenn ein Alarm schon läuft: nur Extras updaten, Phase behalten
-                if (rescheduleExistingForIndexKeepPhase(idx)) {
+
+                if (rescheduleExistingForIndexKeepNextAt(idx)) {
                     dbg("[main] sound changed -> rescheduled keep phase")
                     return
                 }
@@ -566,6 +628,7 @@ Component.onCompleted: {
 
     function startActions() {
         dbg("[Main] startActions()")
+        SoundTaskManager.cancelAll()
         actionsRunning = true
 
         schedulerInit()
@@ -609,6 +672,8 @@ Component.onCompleted: {
 
             actionModel.setProperty(i, "nextFireMs", 0)
             actionModel.setProperty(i, "lastFiredMs", 0)
+
+            actionModel.setProperty(i, "AlarmId", 0)
         }
     }
 
@@ -1168,7 +1233,9 @@ Component.onCompleted: {
                 onStartTimeEdited: function(v) { app.setRole(index, "startTime", v) }
                 onEndTimeEdited: function(v) { app.setRole(index, "endTime", v) }
                 onIntervalMinutesEdited: function(v) { app.setRole(index, "intervalMinutes", v) }
-                onSoundEdited: function(v) { app.setRole(index, "sound", v) }
+                onSoundEdited: function(v) {
+                    app.setRole(index, "sound", v)
+                }
                 onSoundEnabledEdited: function(v) { app.setRole(index, "soundEnabled", v) }
 
                 onDeleteRequested: function(idx) {
