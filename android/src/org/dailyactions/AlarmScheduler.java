@@ -228,6 +228,15 @@ public class AlarmScheduler {
                 return;
             }
 
+            // Optional aber sinnvoll ab Android 12+: vorher prüfen, sonst ggf. SecurityException
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (!am.canScheduleExactAlarms()) {
+                    logW("No permission to schedule exact alarms (canScheduleExactAlarms=false)");
+                    // -> hier ggf. graceful fallback oder Settings-Intent ACTION_REQUEST_SCHEDULE_EXACT_ALARM
+                    return;
+                }
+            }
+
             Intent i = buildBaseIntent(ctx, requestId);
 
             // Extras
@@ -243,26 +252,33 @@ public class AlarmScheduler {
             i.putExtra(EXTRA_START_TIME, startTime);
             i.putExtra(EXTRA_END_TIME, endTime);
 
-            // ✅ seconds (neu + legacy)
             i.putExtra(EXTRA_INTERVAL_SECONDS, intervalSeconds);
-
             i.putExtra(EXTRA_VOLUME01, v);
 
-            // ✅ WICHTIG: geplanten Trigger mitsenden (für phasenstabile Reschedules + UI-Sync)
             i.putExtra(EXTRA_TRIGGER_AT_MILLIS, triggerAtMillis);
-
 
             PendingIntent pi = PendingIntent.getBroadcast(ctx, requestId, i, pendingIntentFlags());
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, pi);
-                logI("Alarm setExactAndAllowWhileIdle(RTC_WAKEUP) scheduled.");
-            } else {
-                am.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, pi);
-                logI("Alarm setExact(RTC_WAKEUP) scheduled.");
-            }
-            // <<< NEU: nextAt persistieren (UI-Sync nach App-Neustart)
+            // "Show intent" für AlarmClock UI (wenn User auf Alarm tippt).
+            // Minimal: öffnet deine App/QtActivity.
+            Intent show = new Intent(ctx, org.qtproject.qt.android.bindings.QtActivity.class);
+            show.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+
+            int showFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= 23) showFlags |= PendingIntent.FLAG_IMMUTABLE;
+
+            PendingIntent showPi = PendingIntent.getActivity(ctx, requestId, show, showFlags);
+
+            AlarmManager.AlarmClockInfo ac =
+                    new AlarmManager.AlarmClockInfo(triggerAtMillis, showPi);
+
+            am.setAlarmClock(ac, pi);
+            logI("Alarm setAlarmClock() scheduled.");
+
             saveNextAtMs(ctx.getApplicationContext(), requestId, triggerAtMillis);
+
+        } catch (SecurityException se) {
+            logE("scheduleWithParams failed: missing exact alarm permission", se);
         } catch (Throwable t) {
             logE("scheduleWithParams failed", t);
         }
