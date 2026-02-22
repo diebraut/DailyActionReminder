@@ -1,5 +1,6 @@
-#include "SoundTaskManager.h"
+#include <QVariant>
 
+#include "SoundTaskManager.h"
 #include "SoundTaskManagerFactory.h"
 
 SoundTaskManager::SoundTaskManager(QObject *parent)
@@ -59,11 +60,19 @@ bool SoundTaskManager::cancel(int requestId)
     return m_impl->cancel(requestId);
 }
 
-bool SoundTaskManager::cancelAll()
+bool SoundTaskManager::cancelAll(const QVariantList &ids)
 {
-    return m_impl->cancelAll();
-}
+    if (!m_impl) return false;
 
+    QList<int> list;
+    list.reserve(ids.size());
+    for (const QVariant &v : ids) {
+        bool ok = false;
+        int id = v.toInt(&ok);
+        if (ok && id > 0) list.push_back(id);
+    }
+    return m_impl->cancelAll(list);
+}
 
 bool SoundTaskManager::isScheduled(int alarmId)
 {

@@ -52,520 +52,65 @@ public class AlarmReceiver extends BroadcastReceiver {
 
     // -------------------- SEQUENTIAL PLAYBACK QUEUE --------------------
     private static final Object PLAY_LOCK = new Object();
-    private static final java.util.ArrayDeque<ExpectedActions.Action> PLAY_Q = new java.util.ArrayDeque<>();
+    private static final java.util.ArrayDeque<SoundEvent> PLAY_Q = new java.util.ArrayDeque<>();
     private static boolean PLAYING = false;
 
+    // Immutable-ish data object (copy on read).
+    // Inside ExpectedActions
+    // Immutable-ish data object (copy on read).
+    private static final class SoundEvent {
+        final int requestId;
+        final String soundName;
+        final float  volume01;
+        final int duration;
 
-    // --------------------------------------------------------------------------------------------
-    // Expected / planned actions registry
-    // - Holds all information needed to execute an action in onReceive() without relying on Intent extras.
-    // - Populated by the scheduling side (e.g. AlarmScheduler / JNI bridge) via addPlannedAktions().
-    // --------------------------------------------------------------------------------------------
-    private static final ExpectedActions EXPECTED_ACTIONS = new ExpectedActions();
-
-    /**
-     * Register / update a planned action.
-     * Keep ALL fields that onReceive() may need (sound/volume + notification + scheduling parameters).
-     */
-    public static void addPlannedAktions(
-            Context ctx,
-            int requestId,
-            long triggerAtMillis,
-            String soundName,
-            float volume01,
-            String title,
-            String actionText,
-            String mode,
-            String fixedTime,
-            String startTime,
-            String endTime,
-            int intervalSeconds
-    ) {
-        if (ctx == null) {
-            Log.w(TAG, "ExpectedActions: add/update aborted (ctx==null) id=" + requestId);
-            return;
-        }
-        EXPECTED_ACTIONS.put(ctx.getApplicationContext(), new ExpectedActions.Action(
-                requestId,
-                triggerAtMillis,
-                soundName,
-                clamp01(volume01),
-                title,
-                actionText,
-                mode,
-                fixedTime,
-                startTime,
-                endTime,
-                intervalSeconds
-        ));
-        Log.w(TAG, "ExpectedActions: add/update id=" + requestId + " trig=" + triggerAtMillis
-                + " mode=" + mode + " sound=" + soundName + " vol=" + clamp01(volume01));
-    }
-
-    /**
-     * Backwards-compatible overload (in-memory only).
-     * NOTE: This will NOT survive process death. Prefer the Context overload above.
-     */
-    public static void addPlannedAktions(
-            int requestId,
-            long triggerAtMillis,
-            String soundName,
-            float volume01,
-            String title,
-            String actionText,
-            String mode,
-            String fixedTime,
-            String startTime,
-            String endTime,
-            int intervalSeconds
-    ) {
-        EXPECTED_ACTIONS.putInMemoryOnly(new ExpectedActions.Action(
-                requestId,
-                triggerAtMillis,
-                soundName,
-                clamp01(volume01),
-                title,
-                actionText,
-                mode,
-                fixedTime,
-                startTime,
-                endTime,
-                intervalSeconds
-        ));
-        Log.w(TAG, "ExpectedActions: add/update (memory-only) id=" + requestId + " trig=" + triggerAtMillis);
-    }
-
-    /**
-     * Remove a planned action (e.g. after cancel()).
-     */
-    public static void removeAktions(Context ctx, int requestId) {
-        if (ctx == null) {
-            Log.w(TAG, "ExpectedActionsXX: remove aborted (ctx==null) id=" + requestId);
-            return;
-        }
-        EXPECTED_ACTIONS.remove(ctx.getApplicationContext(), requestId);
-        Log.w(TAG, "ExpectedActions: removeXX id=" + requestId);
-    }
-
-    /** Backwards-compatible overload (memory-only). */
-    public static void removeAktions(int requestId) {
-        EXPECTED_ACTIONS.removeInMemoryOnly(requestId);
-        Log.w(TAG, "ExpectedActionsXX: remove (memory-only) id=" + requestId);
-    }
-
-    public static void clearAllExpectedActions(Context ctx) {
-        if (ctx == null) return;
-        EXPECTED_ACTIONS.clearAll(ctx.getApplicationContext());
-    }
-
-    public static int[] listActionIds(Context ctx) {
-        if (ctx == null) return new int[0];
-        Context app = ctx.getApplicationContext();
-
-        try {
-            java.util.List<ExpectedActions.Action> all = EXPECTED_ACTIONS.getAll(app);
-            int[] ids = new int[all.size()];
-            for (int i = 0; i < all.size(); i++) {
-                ids[i] = all.get(i).requestId;
-            }
-            return ids;
-        } catch (Throwable t) {
-            Log.w(TAG, "listActionIds failed: " + t);
-            return new int[0];
-        }
-    }
-
-
-    /**
-     * Optional helper: fetch a planned action snapshot (can be null).
-     */
-    private static ExpectedActions.Action getExpectedAction(Context ctx, int requestId) {
-        return EXPECTED_ACTIONS.get(ctx, requestId);
-    }
-
-    /**
-     * Internal registry for planned actions.
-     */
-
-    // Callback used by ExpectedActions to execute an action (play + reschedule etc.)
-    private interface ActionRunner {
-        void run(ExpectedActions.Action a, boolean executeFull);
-    }
-
-    private static final class ExpectedActions {
-
-        private static final String PREFS_NAME = "dailyactions_expected_actions";
-        private static final String KEY_PREFIX = "a_";
-
-        private static final String KEY_HANDLED_PREFIX = "h_";
-        private final java.util.HashMap<Integer, Action> map = new java.util.HashMap<>();
-
-        private SharedPreferences prefs(Context ctx) {
-            return ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        // Main ctor (allows explicit isExecute)
+        SoundEvent(int requestId,
+               String soundName,
+               final float volume01,
+               int    duration) {
+            this.requestId  = requestId;
+            this.soundName = soundName;
+            this.volume01 = volume01;
+            this.duration = duration;
         }
 
-        private String key(int requestId) {
-            return KEY_PREFIX + requestId;
+        // Copy (keeps current isExecute)
+        SoundEvent copy() {
+            return new SoundEvent(
+                    requestId,
+                    soundName,
+                    volume01,
+                    duration
+            );
         }
 
-        private String handledKey(int requestId) {
-            return KEY_HANDLED_PREFIX + requestId;
-        }
 
-        private long getHandledTriggerMs(Context ctx, int requestId) {
+        String toJson() {
             try {
-                return prefs(ctx).getLong(handledKey(requestId), -1L);
+                JSONObject o = new JSONObject();
+                o.put("requestId", requestId);
+                o.put("soundName", soundName);
+                o.put("volume01", (double) volume01);
+                o.put("duration", duration);
+
+                return o.toString();
             } catch (Throwable t) {
-                return -1L;
+                return null;
             }
         }
 
-        private java.util.List<Action> getAll(Context ctx) {
-            java.util.ArrayList<Action> out = new java.util.ArrayList<>();
-            java.util.Map<String, ?> all = prefs(ctx).getAll();
-            for (java.util.Map.Entry<String, ?> e : all.entrySet()) {
-                String k = e.getKey();
-                if (k == null || !k.startsWith(KEY_PREFIX)) continue;
-                Object v = e.getValue();
-                if (!(v instanceof String)) continue;
-                Action a = Action.fromJson((String) v);
-                if (a != null) out.add(a);
-            }
-            return out;
-        }
-
-        private void markHandledTriggerMs(Context ctx, int requestId, long triggerAtMillis) {
+        static SoundEvent fromJson(String json) {
             try {
-                prefs(ctx).edit().putLong(handledKey(requestId), triggerAtMillis).apply();
-            } catch (Throwable t) {
-                Log.w(TAG, "ExpectedActions: markHandled failed id=" + requestId + ": " + t);
-            }
-        }
-
-
-        private synchronized void put(Context ctx, Action a) {
-            Log.w(TAG, "ExpectedActionsXX (put): put Action id=" + a.requestId);
-            a.isExecuted = false;        // NEU: beim (re)Schedule reset
-            map.put(a.requestId, a);
-            persistLocked(ctx, a);
-        }
-
-        private synchronized void putInMemoryOnly(Action a) {
-            Log.w(TAG, "ExpectedActionsXX (putInMemory): put Action id=" + a.requestId);
-            a.isExecuted = false;        // NEU: beim (re)Schedule reset
-            map.put(a.requestId, a);
-        }
-
-        private synchronized void remove(Context ctx, int requestId) {
-            map.remove(requestId);
-            prefs(ctx).edit()
-                    .remove(key(requestId))          // a_<id>
-                    .remove(handledKey(requestId))   // h_<id>  <-- WICHTIG
-                    .apply();
-        }
-
-        private synchronized void removeInMemoryOnly(int requestId) {
-            map.remove(requestId);
-        }
-
-        private synchronized void clearAll(Context ctx) {
-            map.clear();
-            prefs(ctx).edit().clear().apply();
-        }
-
-        private synchronized void setExecuted(Context ctx, int requestId, boolean executed) {
-            Action cur = get(ctx, requestId);
-            if (cur == null) return;
-
-            Action upd = cur.withExecuted(executed);
-
-            // cache aktualisieren
-            map.put(requestId, upd);
-
-            // persistieren
-            persistLocked(ctx, upd);
-        }
-
-        private synchronized Action get(Context ctx, int requestId) {
-            Action a = map.get(requestId);
-            if (a != null) return a.copy();
-
-            // fallback to prefs
-            try {
-                String json = prefs(ctx).getString(key(requestId), null);
-                if (json == null) return null;
-                Action parsed = Action.fromJson(json);
-                if (parsed != null) {
-                    map.put(requestId, parsed);
-                    return parsed.copy();
-                }
-            } catch (Throwable t) {
-                Log.w(TAG, "ExpectedActions: get() parse failed id=" + requestId + ": " + t);
-            }
-            return null;
-        }
-        // Debug: dump all persisted expected actions (sorted by trigger time)
-        void logAllExpectedActions(Context ctx, long nowMs) {
-            if (ctx == null) return;
-            try {
-                java.util.ArrayList<Action> list = new java.util.ArrayList<>();
-
-                java.util.Map<String, ?> all = prefs(ctx).getAll();
-                for (java.util.Map.Entry<String, ?> e : all.entrySet()) {
-                    String k = e.getKey();
-                    if (k == null || !k.startsWith(KEY_PREFIX)) continue;
-
-                    Object v = e.getValue();
-                    if (!(v instanceof String)) continue;
-
-                    Action a = Action.fromJson((String) v);
-                    if (a == null) continue;
-
-                    list.add(a);
-                }
-
-                list.sort((a, b) -> Long.compare(a.triggerAtMillis, b.triggerAtMillis));
-
-                if (list.isEmpty()) {
-                    Log.w(TAG, "ExpectedActionsXX <empty>");
-                    return;
-                }
-
-                int idx = 1;
-                for (Action a : list) {
-                    long lateBy = (a.triggerAtMillis > 0) ? (nowMs - a.triggerAtMillis) : 0L;
-                    Log.w(TAG,
-                            "ExpectedActionsXX id(" + idx + ")=" + a.requestId +
-                            " trigTime=" + a.triggerAtMillis +
-                            " lateBy=" + lateBy + "ms"
-                    );
-                    idx++;
-                }
-            } catch (Throwable t) {
-                Log.w(TAG, "ExpectedActionsXX dump failed: " + t);
-            }
-        }
-
-        /**
-         * Handle an incoming onReceive for {@code requestId}.
-         *
-         * Rules:
-         * 1) If this (requestId, triggerAtMillis) was already handled -> ignore and remove the expected entry.
-         * 2) Otherwise: execute + remove. Then execute any other actions planned within the next {@code windowMs}.
-         *
-         * This does NOT "predict" future alarms. It only uses the ExpectedActions store as ground truth.
-         */
-         boolean handleOnReceiveWindow(Context ctx,
-                                       int requestId,
-                                       long trigAt,
-                                       long nowMs,
-                                       long windowMs,
-                                       ActionRunner runner) {
-             final long windowStart = nowMs - 2000;
-             final long windowEnd   = nowMs + windowMs;
-
-             // 1) immer: current id behandeln (damit handledByExpected=true wird)
-             Action first = get(ctx, requestId);
-             if (first == null) return false;
-
-             // per Call nicht doppelt laufen lassen
-             java.util.HashSet<Integer> ran = new java.util.HashSet<>();
-
-             // helper
-             java.util.function.Consumer<Action> runFull = (Action a) -> {
-                 if (a == null) return;
-                 if (a.isExecuted) return;             // schon erledigt
-                 if (!ran.add(a.requestId)) return;   // in diesem Call schon gelaufen
-
-                 runner.run(a, /*executeFull=*/true);
-
-                 // persist "executed" als Dedupe
-                 a.isExecuted = true;
-                 setExecuted(ctx, a.requestId, true);
-             };
-
-             // A) wenn FIRST schon executed: nichts weiter (oder trotzdem scan, je nach Wunsch)
-             if (!first.isExecuted) {
-                 boolean inWindow = (first.requestId == requestId) ||
-                                    (first.triggerAtMillis >= windowStart && first.triggerAtMillis <= windowEnd);
-                 if (inWindow) runFull.accept(first);
-                 else return true; // wie von dir gewünscht: nur return true
-             }
-
-             // 2) NEU: alle anderen ExpectedActions im Fenster ebenfalls ausführen
-             for (Action a : getAll(ctx)) { // getAll: alle gespeicherten ExpectedActions laden
-                 if (a.requestId == requestId) continue; // first schon oben
-                 boolean inWindow = (a.triggerAtMillis >= windowStart && a.triggerAtMillis <= windowEnd);
-                 if (inWindow) {
-                     runFull.accept(a);
-                 }
-             }
-             return true;
-         }
-
-        private void persistLocked(Context ctx, Action a) {
-            try {
-                prefs(ctx).edit().putString(key(a.requestId), a.toJson()).apply();
-            } catch (Throwable t) {
-                Log.w(TAG, "ExpectedActions: persist failed id=" + a.requestId + ": " + t);
-            }
-        }
-
-        @SuppressWarnings("unused")
-        private synchronized int size() {
-            return map.size();
-        }
-
-        // Immutable-ish data object (copy on read).
-        // Inside ExpectedActions
-        // Immutable-ish data object (copy on read).
-        private static final class Action {
-            final int requestId;
-            final long triggerAtMillis;
-
-            final String soundName;
-            final float volume01;
-
-            final String title;
-            final String actionText;
-
-            final String mode;
-            final String fixedTime;
-            final String startTime;
-            final String endTime;
-            int intervalSeconds;
-
-            // NEW: execution marker (persisted)
-            boolean isExecuted;   // default false on (new) schedules
-
-            // Main ctor (allows explicit isExecute)
-            Action(int requestId,
-                   long triggerAtMillis,
-                   String soundName,
-                   float volume01,
-                   String title,
-                   String actionText,
-                   String mode,
-                   String fixedTime,
-                   String startTime,
-                   String endTime,
-                   int intervalSeconds,
-                   boolean isExecute) {
-                this.requestId = requestId;
-                this.triggerAtMillis = triggerAtMillis;
-                this.soundName = soundName;
-                this.volume01 = volume01;
-                this.title = title;
-                this.actionText = actionText;
-                this.mode = mode;
-                this.fixedTime = fixedTime;
-                this.startTime = startTime;
-                this.endTime = endTime;
-                this.intervalSeconds = intervalSeconds;
-                this.isExecuted = isExecuted;
-            }
-
-            // Convenience ctor used by scheduling side (defaults to false)
-            Action(int requestId,
-                   long triggerAtMillis,
-                   String soundName,
-                   float volume01,
-                   String title,
-                   String actionText,
-                   String mode,
-                   String fixedTime,
-                   String startTime,
-                   String endTime,
-                   int intervalSeconds) {
-                this(requestId, triggerAtMillis, soundName, volume01, title, actionText,
-                     mode, fixedTime, startTime, endTime, intervalSeconds,
-                     /*isExecute=*/false);
-            }
-
-            // Copy (keeps current isExecute)
-            Action copy() {
-                return new Action(
-                        requestId,
-                        triggerAtMillis,
-                        soundName,
-                        volume01,
-                        title,
-                        actionText,
-                        mode,
-                        fixedTime,
-                        startTime,
-                        endTime,
-                        intervalSeconds,
-                        isExecuted
+                JSONObject o = new JSONObject(json);
+                return new SoundEvent(
+                        o.optInt("requestId", -1),
+                        o.optString("soundName", null),
+                        (float) o.optDouble("volume01", 1.0),
+                        o.optInt("duration", 1)
                 );
-            }
-
-            // Helper: return a copy with updated execute flag
-            Action withExecuted(boolean executed) {
-                return new Action(
-                        requestId,
-                        triggerAtMillis,
-                        soundName,
-                        volume01,
-                        title,
-                        actionText,
-                        mode,
-                        fixedTime,
-                        startTime,
-                        endTime,
-                        intervalSeconds,
-                        executed
-                );
-            }
-
-            String toJson() {
-                try {
-                    JSONObject o = new JSONObject();
-                    o.put("requestId", requestId);
-                    o.put("triggerAtMillis", triggerAtMillis);
-
-                    o.put("soundName", soundName);
-                    o.put("volume01", (double) volume01);
-
-                    o.put("title", title);
-                    o.put("actionText", actionText);
-
-                    o.put("mode", mode);
-                    o.put("fixedTime", fixedTime);
-                    o.put("startTime", startTime);
-                    o.put("endTime", endTime);
-                    o.put("intervalSeconds", intervalSeconds);
-
-                    // NEW
-                    o.put("isExecuted", isExecuted);
-
-                    return o.toString();
-                } catch (Throwable t) {
-                    return null;
-                }
-            }
-
-            static Action fromJson(String json) {
-                try {
-                    JSONObject o = new JSONObject(json);
-                    return new Action(
-                            o.optInt("requestId", -1),
-                            o.optLong("triggerAtMillis", -1L),
-                            o.optString("soundName", null),
-                            (float) o.optDouble("volume01", 1.0),
-                            o.optString("title", null),
-                            o.optString("actionText", null),
-                            o.optString("mode", null),
-                            o.optString("fixedTime", null),
-                            o.optString("startTime", null),
-                            o.optString("endTime", null),
-                            o.optInt("intervalSeconds", 0),
-                            // NEW (default false if missing in old persisted entries)
-                            o.optBoolean("isExecuted", false)
-                    );
-                } catch (Throwable t) {
-                    return null;
-                }
+            } catch (Throwable t) {
+                return null;
             }
         }
     }
@@ -588,10 +133,22 @@ public class AlarmReceiver extends BroadcastReceiver {
                   " now=" + System.currentTimeMillis() +
                   " trig=" + intent.getLongExtra(AlarmScheduler.EXTRA_TRIGGER_AT_MILLIS, -1) +
                   " lateBy=" + (System.currentTimeMillis() - intent.getLongExtra(AlarmScheduler.EXTRA_TRIGGER_AT_MILLIS, -1)) + "ms");
-            EXPECTED_ACTIONS.logAllExpectedActions(appCtx, System.currentTimeMillis());
+            logAudioState(appCtx);
+            showNotification(appCtx, intent, requestId);
+            Log.w(TAG, "ExpectedActionsXX: execut id=" + requestId);
 
-            final long trigAt = intent.getLongExtra(AlarmScheduler.EXTRA_TRIGGER_AT_MILLIS, -1L);
-            final long nowMs = System.currentTimeMillis();
+            // Interval reschedule (does nothing for fixed-time)
+            Log.w(TAG, "ExpectedActionsXX: rescheduleNextFromIntent id=" + requestId);
+            AlarmScheduler.rescheduleNextFromIntent(appCtx, intent);
+
+            // Play sequentially
+            SoundEvent e = new SoundEvent(requestId,intent.getStringExtra(AlarmScheduler.EXTRA_SOUND_NAME),
+                                          intent.getFloatExtra(AlarmScheduler.EXTRA_VOLUME01,1.0f),intent.getIntExtra(AlarmScheduler.EXTRA_DURATION_SOUND,0));
+            enqueueAndPlay(appCtx, e);
+
+
+            /*
+
 
             // Use ExpectedActions to dedupe + execute this action and any others planned in the next 5s.
             final boolean handledByExpected = EXPECTED_ACTIONS.handleOnReceiveWindow(
@@ -599,7 +156,7 @@ public class AlarmReceiver extends BroadcastReceiver {
                 requestId,
                 trigAt,
                 nowMs,
-                /*windowMs=*/5000L,
+                5000L,
                 (ExpectedActions.Action a,boolean executeFull) -> {
                     // Build a synthetic intent containing all extras needed by the existing execution path.
                     Intent ii = new Intent();
@@ -639,15 +196,16 @@ public class AlarmReceiver extends BroadcastReceiver {
                     enqueueAndPlay(appCtx, a);
                 }
             );
+            */
         } catch (Throwable t) {
             Log.e(TAG, "onReceive failed", t);
         }
     }
 
-    private static void enqueueAndPlay(Context ctx, ExpectedActions.Action a) {
-        if (ctx == null || a == null) return;
+    private static void enqueueAndPlay(Context ctx, SoundEvent e) {
+        if (ctx == null || e == null) return;
         synchronized (PLAY_LOCK) {
-            PLAY_Q.addLast(a);
+            PLAY_Q.addLast(e);
             if (PLAYING) return;
             PLAYING = true;
         }
@@ -655,7 +213,7 @@ public class AlarmReceiver extends BroadcastReceiver {
     }
 
     private static void playNextLocked(Context appCtx) {
-        final ExpectedActions.Action next;
+        final SoundEvent next;
         synchronized (PLAY_LOCK) {
             next = PLAY_Q.pollFirst();
             if (next == null) {

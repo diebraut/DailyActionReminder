@@ -37,6 +37,7 @@ public class AlarmScheduler {
     public static final String EXTRA_INTERVAL_MINUTES = "intervalMinutes";
 
     public static final String EXTRA_VOLUME01    = "volume01";
+    public static final String EXTRA_DURATION_SOUND    = "duration_sound";
 
     // --------------------------------------------------------------------------------------------
     // Debug helper
@@ -196,25 +197,6 @@ public class AlarmScheduler {
                 + " end=" + endTime
                 + " intervalSec=" + intervalSeconds
         );
-        // Keep a persistent copy of all parameters needed to execute this action (Receiver side, survives process death)
-        try {
-            AlarmReceiver.addPlannedAktions(
-                    ctx.getApplicationContext(),
-                    requestId,
-                    triggerAtMillis,
-                    soundName,
-                    v,
-                    title,
-                    actionText,
-                    mode,
-                    fixedTime,
-                    startTime,
-                    endTime,
-                    intervalSeconds
-            );
-        } catch (Throwable t) {
-            logE("ExpectedActions addPlannedAktions failed", t);
-        }
 
         if ("interval".equalsIgnoreCase(mode)) {
             long phase = loadPhaseMs(ctx, requestId);
@@ -255,6 +237,9 @@ public class AlarmScheduler {
             i.putExtra(EXTRA_INTERVAL_SECONDS, intervalSeconds);
             i.putExtra(EXTRA_VOLUME01, v);
 
+            i.putExtra(EXTRA_VOLUME01, v);
+            i.putExtra(EXTRA_DURATION_SOUND, 1);
+
             i.putExtra(EXTRA_TRIGGER_AT_MILLIS, triggerAtMillis);
 
             PendingIntent pi = PendingIntent.getBroadcast(ctx, requestId, i, pendingIntentFlags());
@@ -292,9 +277,6 @@ public class AlarmScheduler {
         if (ctx == null) return;
         Context app = ctx.getApplicationContext();
 
-        // Receiver-side registry cleanup
-        try { AlarmReceiver.removeAktions(app, requestId); } catch (Throwable ignored) {}
-
         AlarmManager am = (AlarmManager) app.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
 
@@ -316,29 +298,28 @@ public class AlarmScheduler {
         clearPhase(app, requestId);
     }
 
-    public static void cancelAll(Context ctx) {
+    public static void cancelAll(Context ctx, int[] ids) {
         if (ctx == null) return;
         Context app = ctx.getApplicationContext();
 
-        // 1) Alle IDs holen (Snapshot)
-        int[] ids;
-        try {
-            ids = AlarmReceiver.listActionIds(app);
-        } catch (Throwable t) {
-            ids = new int[0];
+        if (ids == null || ids.length == 0) {
+            logI("CANCEL_ALL count=0");
+            return;
         }
 
-        // 2) Jeden Alarm wie cancel(...) entfernen
+        int count = 0;
+
         for (int id : ids) {
-            try { cancel(app, id); } catch (Throwable ignored) {}
+            if (id <= 0) continue;
+
+            try {
+                cancel(app, id);
+                count++;
+            } catch (Throwable ignored) {}
         }
 
-        // 3) Receiver-side Registry komplett leeren (Sicherheit)
-        try { AlarmReceiver.clearAllExpectedActions(app); } catch (Throwable ignored) {}
-
-        logI("CANCEL_ALL count=" + ids.length);
+        logI("CANCEL_ALL count=" + count);
     }
-
 
     public static void rescheduleNextFromIntent(Context ctx, Intent intent) {
         if (ctx == null || intent == null) return;

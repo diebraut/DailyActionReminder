@@ -61,6 +61,8 @@ Rectangle {
     signal soundEnabledEdited(bool v)
     signal volumeEdited(real v)
 
+    property int soundDurationSec: 1
+    signal soundDurationSecEdited(int v)
 
     // NEW: Preview mit Sound-Namen
     signal previewSoundRequested(string soundName)
@@ -1033,67 +1035,160 @@ Rectangle {
                         // ---- SOUND ----
                         SectionHeader { title: "Ton" }
 
-                        RowLayout {
+                        GridLayout {
+                            id: soundRow
                             Layout.fillWidth: true
-                            spacing: 10
+                            columns: 2
+                            columnSpacing: 10
+                            rowSpacing: 0
 
-                            Item {
-                                implicitWidth: 30
-                                implicitHeight: 30
-                                Layout.preferredWidth: 30
-                                Layout.preferredHeight: 30
+                            // -------- LEFT: Icon + Soundname Button (≈45%) --------
+                            RowLayout {
+                                Layout.preferredWidth: Math.floor(editRow.width * 0.45)
+                                Layout.maximumWidth: Layout.preferredWidth
+                                Layout.fillWidth: false
                                 Layout.alignment: Qt.AlignVCenter
+                                spacing: 10
 
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "🔊"
-                                    font.pixelSize: 24
-                                    color: "#222222"
+                                Item {
+                                    implicitWidth: 30
+                                    implicitHeight: 30
+                                    Layout.preferredWidth: 30
+                                    Layout.preferredHeight: 30
+                                    Layout.alignment: Qt.AlignVCenter
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "🔊"
+                                        font.pixelSize: 24
+                                        color: "#222222"
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: function(mouse) {
+                                            mouse.accepted = true
+                                            root.previewSoundRequested(root.soundDisplayName)
+                                        }
+                                    }
                                 }
 
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: function(mouse) {
-                                        mouse.accepted = true
-                                        root.previewSoundRequested(root.soundDisplayName)
+                                Rectangle {
+                                    id: soundNameButton
+                                    height: 36
+                                    radius: 8
+                                    color: "#ffffff"
+                                    border.color: "#b0b0b0"
+                                    Layout.fillWidth: true
+                                    Layout.alignment: Qt.AlignVCenter
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 10
+                                        spacing: 8
+
+                                        Text {
+                                            text: root.soundDisplayName
+                                            font.pixelSize: 11
+                                            color: "#000000"
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                            verticalAlignment: Text.AlignVCenter
+                                        }
+
+                                        Text {
+                                            text: "▾"
+                                            font.pixelSize: 12
+                                            color: "#444444"
+                                            Layout.alignment: Qt.AlignVCenter
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: function(mouse) {
+                                            mouse.accepted = true
+                                            soundDialog.open()
+                                        }
                                     }
                                 }
                             }
 
-                            Text {
-                                text: root.soundDisplayName
-                                font.pixelSize: 14
-                                color: "#000000"
-                                elide: Text.ElideRight
-                                Layout.fillWidth: true
+                            // -------- RIGHT: Dauer + mm:ss + Slider (≈45%) --------
+                            ColumnLayout {
+                                id: soundDurationBox
+                                Layout.preferredWidth: Math.floor(editRow.width * 0.45)
+                                Layout.maximumWidth: Layout.preferredWidth
+                                Layout.fillWidth: false
                                 Layout.alignment: Qt.AlignVCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
 
-                            Rectangle {
-                                width: 120
-                                height: 36
-                                radius: 8
-                                color: "#d0d0d0"
-                                border.color: "#b0b0b0"
-                                Layout.alignment: Qt.AlignVCenter
+                                spacing: 4
+                                Layout.topMargin: -15
+
+                                //Item { Layout.fillHeight: true }   // Zentrierung nach oben
 
                                 Text {
-                                    anchors.centerIn: parent
-                                    text: "Ändern"
-                                    color: "#000000"
-                                    font.pixelSize: 14
+                                    id: durTitle
+                                    text: "Dauer (Minuten)"
+                                    font.pixelSize: 12
+                                    color: "#444444"
+                                    Layout.alignment: Qt.AlignLeft
+                                    Layout.leftMargin: +5
+
                                 }
 
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: function(mouse) {
-                                        mouse.accepted = true
-                                        soundDialog.open()
+                                RowLayout {
+                                    id: durRow
+                                    Layout.fillWidth: true
+                                    Layout.alignment: Qt.AlignLeft
+                                    spacing: 10
+
+                                    // Slider: 75% der soundDurationBox-Breite
+                                    Slider {
+                                        id: durSlider
+                                        from: 1
+                                        to: 1800
+                                        stepSize: 1
+                                        live: true
+
+                                        // ✅ relativ
+                                        Layout.fillWidth: false
+                                        Layout.preferredWidth: Math.max(60, Math.round(editRow.width * 0.47 * 0.75))
+                                        Layout.alignment: Qt.AlignVCenter
+
+                                        value: Math.max(1, Math.min(1800, root.soundDurationSec || 1))
+
+                                        onPressedChanged: {
+                                            if (!pressed) {
+                                                const v = Math.round(value)
+                                                root.soundDurationSecEdited(v)
+                                            }
+                                        }
                                     }
-                                }
+
+                                    // Zeit: 20% der soundDurationBox-Breite
+                                    Text {
+                                        id: timeText
+                                        Layout.preferredWidth: Math.max(36, Math.round(editRow.width * 0.45 * 0.20))
+                                        Layout.alignment: Qt.AlignVCenter
+
+                                        Layout.leftMargin: -15   // <<< Abstand vom Slider (z.B. 6–12 testen)
+                                        Layout.bottomMargin: +2
+
+                                        horizontalAlignment: Text.AlignRight
+                                        font.pixelSize: 14
+                                        color: "#000000"
+
+                                        text: {
+                                            var sec = Math.max(1, Math.min(1800, durSlider.value|0));
+                                            var m = Math.floor(sec / 60);
+                                            var s = sec % 60;
+                                            return (m < 10 ? "0"+m : ""+m) + ":" + (s < 10 ? "0"+s : ""+s);
+                                        }
+                                    }                                }
+                                //Item { Layout.fillHeight: true }   // Zentrierung nach unten
                             }
                         }
                     }

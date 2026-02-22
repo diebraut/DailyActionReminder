@@ -43,7 +43,7 @@ public:
 
     bool cancel(int requestId) override;
 
-    bool cancelAll() override;
+    bool cancelAll(const QList<int> &ids) override;
 
     bool isScheduled(int alarmId) const override;
 

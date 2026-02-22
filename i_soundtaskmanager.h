@@ -41,7 +41,7 @@ public:
                                     float volume01) = 0;
 
     virtual bool cancel(int requestId) = 0;
-    virtual bool cancelAll() = 0;
+    virtual bool cancelAll(const QList<int> &ids) = 0;
     virtual bool isScheduled(int alarmId) const = 0;
     virtual qint64 getNextAtMs(int alarmId) const = 0;
 

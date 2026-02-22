@@ -71,6 +71,20 @@ ApplicationWindow {
         function onLogLine(s) { lw("[SoundTaskManager]", s) }
     }
 
+    function collectAlarmIds() {
+        var ids = []
+        var seen = {}
+        for (var i = 0; i < actionModel.count; ++i) {
+            var o = actionModel.get(i)
+            var id = (typeof o.alarmId === "number") ? o.alarmId : 0
+            if (id > 0 && !seen[id]) {
+                seen[id] = true
+                ids.push(id)
+            }
+        }
+        return ids
+    }
+
     function detectRunningActionsOnStartup() {
         if (!SoundTaskManager) return
 
@@ -628,7 +642,7 @@ Component.onCompleted: {
 
     function startActions() {
         dbg("[Main] startActions()")
-        SoundTaskManager.cancelAll()
+        SoundTaskManager.cancelAll(collectAlarmIds())
         actionsRunning = true
 
         schedulerInit()

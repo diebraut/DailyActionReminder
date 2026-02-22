@@ -43,7 +43,7 @@ public:
 
     Q_INVOKABLE bool cancel(int requestId);
 
-    Q_INVOKABLE bool cancelAll();
+    Q_INVOKABLE bool cancelAll(const QVariantList &ids);
 
     Q_INVOKABLE bool isScheduled(int alarmId);
 

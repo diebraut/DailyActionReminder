@@ -233,7 +233,7 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
     return ok;
 }
 
-bool SoundTaskManagerAndroid::cancelAll()
+bool SoundTaskManagerAndroid::cancelAll(const QList<int> &ids)
 {
     QJniObject activity = getQtActivity();
     if (!activity.isValid()) {
@@ -241,14 +241,28 @@ bool SoundTaskManagerAndroid::cancelAll()
         return false;
     }
 
-    alogW("cancelAll(): calling AlarmScheduler.cancelAll(ctx)");
+    alogW("cancelAll(): calling AlarmScheduler.cancelAll(ctx, ids) count=%d", ids.size());
+
+    // jintArray bauen
+    QJniEnvironment env;
+    jintArray jIds = env->NewIntArray(ids.size());
+    if (jIds && ids.size() > 0) {
+        QVector<jint> tmp;
+        tmp.reserve(ids.size());
+        for (int id : ids) tmp.push_back((jint)id);
+        env->SetIntArrayRegion(jIds, 0, tmp.size(), tmp.constData());
+    }
 
     QJniObject::callStaticMethod<void>(
         "org/dailyactions/AlarmScheduler",
         "cancelAll",
-        "(Landroid/content/Context;)V",
-        activity.object<jobject>()
+        "(Landroid/content/Context;[I)V",
+        activity.object<jobject>(),
+        jIds
         );
+
+    if (jIds) env->DeleteLocalRef(jIds);
+
 
     const bool ok = clearJniException("cancelAll");
 

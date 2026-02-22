@@ -531,24 +531,15 @@ bool SoundTaskManagerDesktop::cancel(int requestId)
     return true;
 }
 
-bool SoundTaskManagerDesktop::cancelAll()
+bool SoundTaskManagerDesktop::cancelAll(const QList<int> &ids)
 {
-    auto itOuter = g_states.find(this);
-    if (itOuter != g_states.end()) {
-        auto &map = itOuter.value();
-
-        // Alle einzelnen States sauber löschen (Timer + sfx stoppen)
-        for (auto it = map.begin(); it != map.end(); ++it) {
-            TaskState &st = it.value();
-            if (st.oneShot)   stopAndDeleteLater(st.oneShot);
-            if (st.repeating) stopAndDeleteLater(st.repeating);
-            if (st.sfx)       stopAndDeleteLater(st.sfx);
-        }
-
-        g_states.erase(itOuter);
+    int count = 0;
+    for (int id : ids) {
+        if (id <= 0) continue;
+        clearState(this, id);
+        count++;
     }
-
-    emit logLine("[Desktop] cancelAll");
+    emit logLine(QString("[Desktop] cancelAll count=%1").arg(count));
     return true;
 }
 
