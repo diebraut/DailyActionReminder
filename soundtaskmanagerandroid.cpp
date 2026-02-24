@@ -175,7 +175,8 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
                                                  const QString &startTime,
                                                  const QString &endTime,
                                                  int intervalSeconds,
-                                                 float volume01)
+                                                 float volume01,
+                                                 int durationSound)
 {
     QJniObject activity = getQtActivity();
     if (!activity.isValid()) {
@@ -187,7 +188,8 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
 
     const char *sig =
         "(Landroid/content/Context;JLjava/lang/String;ILjava/lang/String;Ljava/lang/String;"
-        "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IF)V";
+        "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IFI)V";
+
 
     QJniObject jSound = QJniObject::fromString(soundName);
     QJniObject jTitle = QJniObject::fromString(title);
@@ -198,7 +200,7 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
     QJniObject jEnd   = QJniObject::fromString(endTime);
 
     alogW("istScheduled() start id=%d",requestId);
-    alogW("SoundTaskManager.scheduleWithParams id=%d at=%lld inMs=%lld mode=%s sound=%s vol=%.2f fixed=%s start=%s end=%s intervalSec=%d",
+    alogW("SoundTaskManager.scheduleWithParams id=%d at=%lld inMs=%lld mode=%s sound=%s vol=%.2f fixed=%s start=%s end=%s intervalSec=%d durationSound=%d",
           requestId,
           (long long)triggerAtMillis,
           (long long)(triggerAtMillis - QDateTime::currentMSecsSinceEpoch()),
@@ -208,7 +210,8 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
           fixedTime.toUtf8().constData(),
           startTime.toUtf8().constData(),
           endTime.toUtf8().constData(),
-          intervalSeconds);
+          intervalSeconds,
+          durationSound);
 
     QJniObject::callStaticMethod<void>(
         "org/dailyactions/AlarmScheduler",
@@ -225,7 +228,8 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
         jStart.object<jstring>(),
         jEnd.object<jstring>(),
         (jint)intervalSeconds,
-        (jfloat)v
+        (jfloat)v,
+        (jint) durationSound
         );
 
     const bool ok = clearJniException("scheduleWithParams");
@@ -316,7 +320,7 @@ int SoundTaskManagerAndroid::startFixedSoundTask(const QString &rawSound,
                                                  const QString &notificationTxt,
                                                  qint64 fixedTimeMs,
                                                  float volume01,
-                                                 int /*soundDurationSec*/)
+                                                 int durationSound)
 {
     const int id = allocId();
 
@@ -334,7 +338,8 @@ int SoundTaskManagerAndroid::startFixedSoundTask(const QString &rawSound,
         "",
         "",
         0,
-        volume01
+        volume01,
+        durationSound
         );
 
     if (!ok) {
@@ -352,7 +357,7 @@ int SoundTaskManagerAndroid::startIntervalSoundTask(const QString &rawSound,
                                                     qint64 endTimeMs,
                                                     int intervalSecs,
                                                     float volume01,
-                                                    int /*soundDurationSec*/)
+                                                    int durationSound)
 {
     if (intervalSecs <= 0) return -1;
 
@@ -438,6 +443,7 @@ int SoundTaskManagerAndroid::startIntervalSoundTask(const QString &rawSound,
     // --- ID holen & schedulen ---
     const int id = allocId();
 
+    alogW("startIntervalSoundTask() start id=%d durationSound = %d ",id , durationSound);
     const bool ok = scheduleWithParams(
         firstAt,
         rawSound,
@@ -449,7 +455,8 @@ int SoundTaskManagerAndroid::startIntervalSoundTask(const QString &rawSound,
         startStr,
         endStr,
         intervalSecs,
-        volume01
+        volume01,
+        durationSound
         );
 
     if (!ok) {

@@ -23,6 +23,8 @@ Rectangle {
     property string startTime
     property string endTime
     property int intervalMinutes
+    property int durationSound
+
     property bool soundEnabled
     property string sound
 
@@ -60,12 +62,10 @@ Rectangle {
     signal soundEdited(string v)
     signal soundEnabledEdited(bool v)
     signal volumeEdited(real v)
-
-    property int soundDurationSec: 1
-    signal soundDurationSecEdited(int v)
+    signal durationSoundEdited(int v)
 
     // NEW: Preview mit Sound-Namen
-    signal previewSoundRequested(string soundName)
+    signal previewSoundRequested(string soundName,int duration)
 
     function _pad2(n) {
         return (n < 10) ? ("0" + n) : ("" + n)
@@ -433,7 +433,7 @@ Rectangle {
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: function(mouse) {
                                         mouse.accepted = true
-                                        root.previewSoundRequested(modelData)
+                                        root.previewSoundRequested(modelData,1)
                                     }
                                 }
                             }
@@ -825,7 +825,7 @@ Rectangle {
                                         root.soundEnabledEdited(v)
                                         // ✅ nur wenn aktiviert -> abspielen
                                         if (v) {
-                                            root.previewSoundRequested(root.soundDisplayName)
+                                            root.previewSoundRequested(root.soundDisplayName,1)
                                         }
                                     }
                                 }
@@ -850,7 +850,7 @@ Rectangle {
                                     if (!pressed) {
                                         root.volumeEdited(root.volume)
                                         if (root.soundEnabled) {
-                                            root.previewSoundRequested(root.soundDisplayName)
+                                            root.previewSoundRequested(root.soundDisplayName,1)
                                         }
                                     }
                                 }
@@ -1069,7 +1069,7 @@ Rectangle {
                                         cursorShape: Qt.PointingHandCursor
                                         onClicked: function(mouse) {
                                             mouse.accepted = true
-                                            root.previewSoundRequested(root.soundDisplayName)
+                                            root.previewSoundRequested(root.soundDisplayName,durationSound)
                                         }
                                     }
                                 }
@@ -1118,7 +1118,7 @@ Rectangle {
 
                             // -------- RIGHT: Dauer + mm:ss + Slider (≈45%) --------
                             ColumnLayout {
-                                id: soundDurationBox
+                                id: durationSoundBox
                                 Layout.preferredWidth: Math.floor(editRow.width * 0.45)
                                 Layout.maximumWidth: Layout.preferredWidth
                                 Layout.fillWidth: false
@@ -1145,7 +1145,7 @@ Rectangle {
                                     Layout.alignment: Qt.AlignLeft
                                     spacing: 10
 
-                                    // Slider: 75% der soundDurationBox-Breite
+                                    // Slider: 75% der durationSoundBox-Breite
                                     Slider {
                                         id: durSlider
                                         from: 1
@@ -1158,17 +1158,17 @@ Rectangle {
                                         Layout.preferredWidth: Math.max(60, Math.round(editRow.width * 0.47 * 0.75))
                                         Layout.alignment: Qt.AlignVCenter
 
-                                        value: Math.max(1, Math.min(1800, root.soundDurationSec || 1))
+                                        value: Math.max(1, Math.min(1800, root.durationSound || 1))
 
                                         onPressedChanged: {
                                             if (!pressed) {
                                                 const v = Math.round(value)
-                                                root.soundDurationSecEdited(v)
+                                                root.durationSoundEdited(v)
                                             }
                                         }
                                     }
 
-                                    // Zeit: 20% der soundDurationBox-Breite
+                                    // Zeit: 20% der durationSoundBox-Breite
                                     Text {
                                         id: timeText
                                         Layout.preferredWidth: Math.max(36, Math.round(editRow.width * 0.45 * 0.20))
@@ -1187,8 +1187,8 @@ Rectangle {
                                             var s = sec % 60;
                                             return (m < 10 ? "0"+m : ""+m) + ":" + (s < 10 ? "0"+s : ""+s);
                                         }
-                                    }                                }
-                                //Item { Layout.fillHeight: true }   // Zentrierung nach unten
+                                    }
+                                }
                             }
                         }
                     }

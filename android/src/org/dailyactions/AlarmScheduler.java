@@ -140,26 +140,6 @@ public class AlarmScheduler {
     }
 
     // --------------------------------------------------------------------------------------------
-    // Public API (ohne Volume)
-    // --------------------------------------------------------------------------------------------
-    public static void scheduleWithParams(
-            Context ctx,
-            long triggerAtMillis,
-            String soundName,
-            int requestId,
-            String title,
-            String actionText,
-            String mode,
-            String fixedTime,
-            String startTime,
-            String endTime,
-            int intervalSeconds
-    ) {
-        scheduleWithParams(ctx, triggerAtMillis, soundName, requestId, title, actionText,
-                mode, fixedTime, startTime, endTime, intervalSeconds, 1.0f);
-    }
-
-    // --------------------------------------------------------------------------------------------
     // Public API (mit Volume)
     // --------------------------------------------------------------------------------------------
     public static void scheduleWithParams(
@@ -174,7 +154,8 @@ public class AlarmScheduler {
             String startTime,
             String endTime,
             int intervalSeconds,
-            float volume01
+            float volume01,
+            int   durationSound
     ) {
         if (ctx == null) {
             logW("scheduleWithParams: ctx == null -> abort");
@@ -188,6 +169,8 @@ public class AlarmScheduler {
 
         logI("SCHEDULE id=" + requestId
                 + " at=" + triggerAtMillis
+                + " intervalSec=" + intervalSeconds
+                + " durationSound=" + durationSound
                 + " inMs=" + inMs
                 + " mode=" + mode
                 + " sound=" + soundName
@@ -195,7 +178,6 @@ public class AlarmScheduler {
                 + " fixed=" + fixedTime
                 + " start=" + startTime
                 + " end=" + endTime
-                + " intervalSec=" + intervalSeconds
         );
 
         if ("interval".equalsIgnoreCase(mode)) {
@@ -238,7 +220,7 @@ public class AlarmScheduler {
             i.putExtra(EXTRA_VOLUME01, v);
 
             i.putExtra(EXTRA_VOLUME01, v);
-            i.putExtra(EXTRA_DURATION_SOUND, 1);
+            i.putExtra(EXTRA_DURATION_SOUND, durationSound);
 
             i.putExtra(EXTRA_TRIGGER_AT_MILLIS, triggerAtMillis);
 
@@ -347,6 +329,7 @@ public class AlarmScheduler {
             final String endTime   = intent.getStringExtra(EXTRA_END_TIME);
 
             final float vol01 = intent.getFloatExtra(EXTRA_VOLUME01, 1.0f);
+            final int durationSound = intent.getIntExtra(EXTRA_DURATION_SOUND, 1);
 
             final long intervalMs = intervalSec * 1000L;
 
@@ -380,7 +363,8 @@ public class AlarmScheduler {
                     (startTime != null) ? startTime : "",
                     (endTime   != null) ? endTime   : "",
                     intervalSec,
-                    vol01
+                    vol01,
+                    durationSound
             );
 
             saveNextAtMs(appCtx, requestId, next);

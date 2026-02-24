@@ -66,6 +66,9 @@ ApplicationWindow {
     property bool uiPaused: false
     property bool configured: false
 
+    property bool _queueForcedStop: false
+    property var _currentQueueItem: null
+
     Connections {
         target: (typeof SoundTaskManager !== "undefined") ? SoundTaskManager : null
         function onLogLine(s) { lw("[SoundTaskManager]", s) }
@@ -108,6 +111,19 @@ ApplicationWindow {
     Connections {
         target: Qt.application
         function onStateChanged() { app.updateUiPaused() }
+    }
+
+    property bool _previewForcedStop: false
+
+    Timer {
+        id: previewStopTimer
+        repeat: false
+        onTriggered: {
+            _previewForcedStop = true
+            previewSfx.stop()
+            previewSfx.loops = 1
+            _previewForcedStop = false
+        }
     }
 
     Timer {
@@ -190,6 +206,9 @@ ApplicationWindow {
             dbg("[SoundTaskManager] skip schedule (disabled/vol=0) idx=", idx, " enabled=", enabled, " vol=", effectiveVol)
             return
         }
+        const durationSound = (typeof o.durationSound === "number")
+                ? o.durationSound
+                : parseInt(o.durationSound || 0)
 
         const rawSound = soundRawForName(o.sound)
         const txt = (typeof o.text === "string" && o.text.length > 0) ? o.text : "Reminder"
@@ -199,7 +218,7 @@ ApplicationWindow {
             if (!fireMs || fireMs <= 0) return
 
             dbg("[SoundTaskManager] startFixed idx=", idx, " fire=", new Date(fireMs).toISOString(), " vol=", effectiveVol)
-            const newId = SoundTaskManager.startFixedSoundTask(rawSound, txt, fireMs, effectiveVol, 0)
+            const newId = SoundTaskManager.startFixedSoundTask(rawSound, txt, fireMs, effectiveVol, durationSound)
             dbg("[SoundTaskManager] startFixed -> id=", newId)
             if (newId > 0) actionModel.setProperty(idx, "alarmId", newId)
             return
@@ -216,7 +235,7 @@ ApplicationWindow {
         const endMs   = _hhmmToTodayMs(nowMs, o.endTime || "")
 
         dbg("[SoundTaskManager] startInterval idx=", idx, " startMs=", startMs, " endMs=", endMs, " intervalSecs=", intervalSecs, " vol=", effectiveVol)
-        const newId2 = SoundTaskManager.startIntervalSoundTask(rawSound, txt, startMs, endMs, intervalSecs, effectiveVol, 0)
+        const newId2 = SoundTaskManager.startIntervalSoundTask(rawSound, txt, startMs, endMs, intervalSecs, effectiveVol, durationSound)
         dbg("[SoundTaskManager] startInterval -> id=", newId2)
         if (newId2 > 0) actionModel.setProperty(idx, "alarmId", newId2)
     }
@@ -239,6 +258,7 @@ ApplicationWindow {
                 startTime: (o.startTime ?? ""),
                 endTime: (o.endTime ?? ""),
                 intervalMinutes: intervalMinutes,
+                durationSound: (typeof o.durationSound === "number" && !isNaN(o.durationSound)) ? o.durationSound : 1,
                 sound: (o.sound ?? "Bell"),
                 soundEnabled: (o.soundEnabled ?? true),
                 volume: (typeof o.volume === "number") ? o.volume : 1.0
@@ -280,6 +300,16 @@ ApplicationWindow {
 
         if (previewSfx.status !== SoundEffect.Ready) return
 
+        // Dauer-Stop vorbereiten
+        previewStopTimer.stop()
+
+        if (_pendingSfxItem && _pendingSfxItem.durMs > 0) {
+            previewSfx.loops = SoundEffect.Infinite
+            previewStopTimer.interval = _pendingSfxItem.durMs
+            previewStopTimer.start()
+        } else {
+            previewSfx.loops = 1
+        }
         _lastSoundStartMs = now
         previewSfx.play()
         _pendingSfxItem = null
@@ -296,6 +326,7 @@ ApplicationWindow {
                 const o = arr[i] || {}
 
                 let intervalMinutes = o.intervalMinutes
+                let durationSound = (typeof o.durationSound === "number" && !isNaN(o.durationSound)) ? o.durationSound : 1
 
                 actionModel.append({
                     alarmId: (typeof o.alarmId === "number") ? o.alarmId : parseInt(o.alarmId || 0),
@@ -305,6 +336,7 @@ ApplicationWindow {
                     startTime: (typeof o.startTime === "string") ? o.startTime : "",
                     endTime: (typeof o.endTime === "string") ? o.endTime : "",
                     intervalMinutes: intervalMinutes,
+                    durationSound: durationSound,
                     sound: (typeof o.sound === "string" && o.sound.trim().length > 0) ? o.sound : "Bell",
                     soundEnabled: (typeof o.soundEnabled === "boolean") ? o.soundEnabled : true,
                     volume: (typeof o.volume === "number") ? o.volume : parseFloat(o.volume || 1.0)
@@ -337,6 +369,9 @@ ApplicationWindow {
         const rawSound = soundRawForName(o.sound);
         const txt = (typeof o.text === "string" && o.text.length > 0) ? o.text : "Reminder";
         const mode = (o.mode || "fixed");
+        const durationSound = (typeof o.durationSound === "number")
+                ? o.durationSound
+                : parseInt(o.durationSound || 0)
 
         if (mode === "fixed") {
             SoundTaskManager.scheduleWithParams(
@@ -346,7 +381,8 @@ ApplicationWindow {
                 o.fixedTime || "",
                 "", "",
                 0,
-                effectiveVol
+                effectiveVol,
+                durationSound
             );
             return true;
         }
@@ -366,7 +402,8 @@ ApplicationWindow {
                 o.startTime || "",
                 o.endTime || "",
                 intervalSec,
-                effectiveVol
+                effectiveVol,
+                durationSound
             );
             syncUiFromAndroidNextAtOnStartup()
             return true;
@@ -385,6 +422,7 @@ ApplicationWindow {
             "startTime": "",
             "endTime": "",
             "intervalMinutes": 60,
+            "durationSound": 1,
             "sound": "Bell",
             "soundEnabled": true,
             "volume": 1.0
@@ -397,6 +435,7 @@ ApplicationWindow {
             "startTime": "09:00",
             "endTime": "18:00",
             "intervalMinutes": 60,
+            "durationSound": 1,
             "sound": "Bell",
             "soundEnabled": true,
             "volume": 1.0
@@ -472,6 +511,7 @@ ApplicationWindow {
             "startTime": "",
             "endTime": "",
             "intervalMinutes": 60,
+            "durationSound": 1,
             "sound": "Bell",
             "soundEnabled": true,
             "volume": 0.5
@@ -498,7 +538,7 @@ ApplicationWindow {
         soundMap: app.soundMap
     }
 
-Component.onCompleted: {
+    Component.onCompleted: {
         dbg("[Main] onCompleted() start")
         const st = Storage.loadState()
         if (st.ok) {
@@ -552,10 +592,19 @@ Component.onCompleted: {
         source: app.desiredPreviewSource
         volume: app.desiredPreviewVolume
         muted: false
+        loops: 1   // ✅ statt loopCount
 
         onStatusChanged: {
             if (status === SoundEffect.Error) {
                 app.resetPreviewSfx("SoundEffect.Error")
+            }
+        }
+
+        onPlayingChanged: {
+            if (!playing && !_previewForcedStop) {
+                // falls du irgendwo manuell stop() machst, Timer sicherheitshalber aus
+                previewStopTimer.stop()
+                previewSfx.loops = 1
             }
         }
     }
@@ -592,6 +641,8 @@ Component.onCompleted: {
 
     function resetPreviewSfx(reason) {
         lw("[Main:SFX] resetPreviewSfx reason=", reason)
+        previewStopTimer.stop()
+        previewSfx.loops = 1
         _pendingSfxItem = null
         sfxSafeReset.reason = reason
         sfxSafeReset.restart()
@@ -612,11 +663,17 @@ Component.onCompleted: {
         onTriggered: app._pumpSoundQueue()
     }
 
-    function enqueueSound(soundName, vol01, priority) {
+    function enqueueSound(soundName, vol01, durationHM, priority) {
         const name = (typeof soundName === "string" && soundName.trim().length > 0) ? soundName.trim() : "Bell"
         const src = soundSourceForName(name)
         const v = (typeof vol01 === "number" && !isNaN(vol01)) ? Math.max(0.0, Math.min(1.0, vol01)) : 1.0
-        const it = { name: name, src: src, vol: v }
+
+        // duration in hundredth-minutes -> ms (1/100 min = 600ms)
+        let hm = 0
+        if (typeof durationHM === "number" && !isNaN(durationHM)) hm = Math.max(0, Math.round(durationHM))
+        const durMs = hm * 600
+
+        const it = { name: name, src: src, vol: v, durMs: durMs }
 
         if (priority)
             _soundQueue.unshift(it)
@@ -624,8 +681,30 @@ Component.onCompleted: {
             _soundQueue.push(it)
     }
 
-    function playSoundPreview(soundName, vol) {
-        enqueueSound(soundName, vol, true)
+    function stopSoundPreviewNow() {
+        // Preview-Timer stoppen
+        previewStopTimer.stop()
+
+        // Queue/Pending leeren
+        _soundQueue = []
+        _pendingSfxItem = null
+
+        // Falls gerade gespielt wird: stoppen
+        _previewForcedStop = true
+        previewSfx.stop()
+        previewSfx.loops = 1
+        _previewForcedStop = false
+    }
+
+    function playSoundPreview(soundName, vol, duration) {
+        // Wenn gerade irgendwas läuft (oder Queue aktiv): dann NUR stoppen
+        if (previewSfx.playing || _pendingSfxItem !== null || _soundQueue.length > 0 || previewStopTimer.running) {
+            stopSoundPreviewNow()
+            return
+        }
+
+        // sonst: normal enqueue (priority)
+        enqueueSound(soundName, vol, duration, true)
     }
 
     // =========================================================
@@ -1230,10 +1309,17 @@ Component.onCompleted: {
                 sound: model.sound
                 soundEnabled: model.soundEnabled
                 volume: model.volume
+
+                durationSound: (typeof model.durationSound === "number" && !isNaN(model.durationSound))
+                              ? model.durationSound
+                              : 1
+
+                onDurationSoundEdited: function(v) { app.setRole(index, "durationSound", v) }
+
                 onVolumeEdited: function(v) { app.setRole(index, "volume", v) }
 
                 soundChoices: app.soundChoices
-                onPreviewSoundRequested: function(name) { app.playSoundPreview(name, delegateRoot.volume) }
+                onPreviewSoundRequested: function(name,duration) { app.playSoundPreview(name, delegateRoot.volume,duration) }
 
                 onToggleRequested: function(idx) {
                     app.expandedIndex = (app.expandedIndex === idx) ? -1 : idx

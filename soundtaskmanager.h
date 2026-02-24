@@ -39,7 +39,8 @@ public:
                                         const QString &startTime,
                                         const QString &endTime,
                                         int intervalSeconds,
-                                        float volume01 = 1.0f);
+                                        float volume01,
+                                        int durationSound);
 
     Q_INVOKABLE bool cancel(int requestId);
 

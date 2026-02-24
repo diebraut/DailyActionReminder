@@ -46,7 +46,8 @@ public:
                             const QString &startTime,
                             const QString &endTime,
                             int intervalSeconds,
-                            float volume01) override;
+                            float volume01,
+                            int durationSound) override;
 
     bool cancel(int requestId) override;
 

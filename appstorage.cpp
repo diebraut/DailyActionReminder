@@ -1,4 +1,4 @@
-#include "AppStorage.h"
+#include "appstorage.h"
 
 #include <QStandardPaths>
 #include <QDir>

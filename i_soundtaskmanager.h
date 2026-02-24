@@ -38,7 +38,8 @@ public:
                                     const QString &startTime,
                                     const QString &endTime,
                                     int intervalSeconds,
-                                    float volume01) = 0;
+                                    float volume01,
+                                    int durationSound) = 0;
 
     virtual bool cancel(int requestId) = 0;
     virtual bool cancelAll(const QList<int> &ids) = 0;

@@ -458,7 +458,8 @@ bool SoundTaskManagerDesktop::scheduleWithParams(qint64 triggerAtMillis,
                                                  const QString &startTime,
                                                  const QString &endTime,
                                                  int intervalSeconds,
-                                                 float volume01)
+                                                 float volume01,
+                                                 int durationSound)
 {
     // Replace any existing task for this requestId
     clearState(this, requestId);

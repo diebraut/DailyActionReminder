@@ -1,4 +1,4 @@
-#include "LogQML.h"
+#include "logqml.h"
 
 #ifdef Q_OS_ANDROID
 #include <android/log.h>

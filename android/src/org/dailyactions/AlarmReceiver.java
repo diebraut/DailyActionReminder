@@ -130,7 +130,8 @@ public class AlarmReceiver extends BroadcastReceiver {
                     intent.getIntExtra(AlarmScheduler.EXTRA_NOTIF_ID, -1)
             );
             Log.w(TAG, "ONRECEIVE id=" + requestId +
-                  " now=" + System.currentTimeMillis() +
+                  " duration=" + intent.getIntExtra(AlarmScheduler.EXTRA_DURATION_SOUND, 0) +
+                  " volume=" + intent.getFloatExtra(AlarmScheduler.EXTRA_VOLUME01, 1f) +
                   " trig=" + intent.getLongExtra(AlarmScheduler.EXTRA_TRIGGER_AT_MILLIS, -1) +
                   " lateBy=" + (System.currentTimeMillis() - intent.getLongExtra(AlarmScheduler.EXTRA_TRIGGER_AT_MILLIS, -1)) + "ms");
             logAudioState(appCtx);
@@ -145,58 +146,6 @@ public class AlarmReceiver extends BroadcastReceiver {
             SoundEvent e = new SoundEvent(requestId,intent.getStringExtra(AlarmScheduler.EXTRA_SOUND_NAME),
                                           intent.getFloatExtra(AlarmScheduler.EXTRA_VOLUME01,1.0f),intent.getIntExtra(AlarmScheduler.EXTRA_DURATION_SOUND,0));
             enqueueAndPlay(appCtx, e);
-
-
-            /*
-
-
-            // Use ExpectedActions to dedupe + execute this action and any others planned in the next 5s.
-            final boolean handledByExpected = EXPECTED_ACTIONS.handleOnReceiveWindow(
-                appCtx,
-                requestId,
-                trigAt,
-                nowMs,
-                5000L,
-                (ExpectedActions.Action a,boolean executeFull) -> {
-                    // Build a synthetic intent containing all extras needed by the existing execution path.
-                    Intent ii = new Intent();
-                    ii.putExtra(AlarmScheduler.EXTRA_REQUEST_ID, a.requestId);
-                    ii.putExtra(AlarmScheduler.EXTRA_NOTIF_ID, a.requestId); // legacy
-                    ii.putExtra(AlarmScheduler.EXTRA_TRIGGER_AT_MILLIS, a.triggerAtMillis);
-
-                    ii.putExtra(AlarmScheduler.EXTRA_SOUND_NAME, a.soundName);
-                    ii.putExtra(AlarmScheduler.EXTRA_VOLUME01, a.volume01);
-
-                    ii.putExtra(AlarmScheduler.EXTRA_TITLE, a.title);
-                    ii.putExtra(AlarmScheduler.EXTRA_TEXT, a.actionText);
-
-                    ii.putExtra(AlarmScheduler.EXTRA_MODE, a.mode);
-                    ii.putExtra(AlarmScheduler.EXTRA_FIXED_TIME, a.fixedTime);
-                    ii.putExtra(AlarmScheduler.EXTRA_START_TIME, a.startTime);
-                    ii.putExtra(AlarmScheduler.EXTRA_END_TIME, a.endTime);
-                    ii.putExtra(AlarmScheduler.EXTRA_INTERVAL_SECONDS, a.intervalSeconds);
-
-                    if (!executeFull) {
-                        // NUR reschedule, sonst nichts
-                        Log.w(TAG, "ExpectedActionsXX: ignore deleted execut id=" + a.requestId);
-                        AlarmScheduler.rescheduleNextFromIntent(appCtx, ii);
-                        return;
-                    }
-
-
-                    logAudioState(appCtx);
-                    showNotification(appCtx, ii, a.requestId);
-                    Log.w(TAG, "ExpectedActionsXX: execut id=" + a.requestId);
-
-                    // Interval reschedule (does nothing for fixed-time)
-                    Log.w(TAG, "ExpectedActionsXX: rescheduleNextFromIntent id=" + a.requestId);
-                    AlarmScheduler.rescheduleNextFromIntent(appCtx, ii);
-
-                    // Play sequentially
-                    enqueueAndPlay(appCtx, a);
-                }
-            );
-            */
         } catch (Throwable t) {
             Log.e(TAG, "onReceive failed", t);
         }

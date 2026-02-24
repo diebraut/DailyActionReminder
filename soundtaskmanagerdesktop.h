@@ -17,7 +17,7 @@ public:
                             const QString &notificationTxt,
                             qint64 fixedTimeMs,
                             float volume01,
-                            int soundDurationSec) override;
+                            int soundDuration) override;
 
     int startIntervalSoundTask(const QString &rawSound,
                                const QString &notificationTxt,
@@ -25,7 +25,7 @@ public:
                                qint64 endTimeMs,
                                int intervalSecs,
                                float volume01,
-                               int soundDurationSec) override;
+                               int soundDuration) override;
 
     void cancelAlarmTask(int alarmId) override;
 
@@ -39,7 +39,8 @@ public:
                             const QString &startTime,
                             const QString &endTime,
                             int intervalSeconds,
-                            float volume01) override;
+                            float volume01,
+                            int durationSound) override;
 
     bool cancel(int requestId) override;
 

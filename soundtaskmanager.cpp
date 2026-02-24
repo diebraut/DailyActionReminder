@@ -1,7 +1,7 @@
 #include <QVariant>
 
-#include "SoundTaskManager.h"
-#include "SoundTaskManagerFactory.h"
+#include "soundtaskmanager.h"
+#include "soundtaskmanagerfactory.h"
 
 SoundTaskManager::SoundTaskManager(QObject *parent)
     : QObject(parent)
@@ -49,10 +49,11 @@ bool SoundTaskManager::scheduleWithParams(qint64 triggerAtMillis,
                                           const QString &startTime,
                                           const QString &endTime,
                                           int intervalSeconds,
-                                          float volume01)
+                                          float volume01,
+                                          int durationSound)
 {
     return m_impl->scheduleWithParams(triggerAtMillis, soundName, requestId, title, text, mode,
-                                      fixedTime, startTime, endTime, intervalSeconds, volume01);
+                                      fixedTime, startTime, endTime, intervalSeconds, volume01,durationSound);
 }
 
 bool SoundTaskManager::cancel(int requestId)
