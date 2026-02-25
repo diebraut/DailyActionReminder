@@ -275,7 +275,7 @@ public class AlarmScheduler {
             am.cancel(pi);
             pi.cancel();
         }
-
+        try { AlarmReceiver.stopPlaying(requestId); } catch (Throwable ignored) {}
         clearNextAtMs(app, requestId);
         clearPhase(app, requestId);
     }

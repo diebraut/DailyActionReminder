@@ -1145,7 +1145,22 @@ Rectangle {
                                     Layout.alignment: Qt.AlignLeft
                                     spacing: 10
 
-                                    // Slider: 75% der durationSoundBox-Breite
+                                    // helpers: durationSound ist Hundertstel-Minuten (1..1800)
+                                    function clampHu(x) { return Math.max(1, Math.min(1800, x|0)); }
+                                    function huToSec(hu) { return Math.max(1, Math.round(hu * 0.6)); }   // 1/100 min = 0.6s
+                                    function secToHu(sec) { return clampHu(Math.round(sec / 0.6)); }
+
+                                    function addSeconds(deltaSec) {
+                                        var hu = clampHu(durSlider.value|0);
+                                        var sec = huToSec(hu);
+                                        sec = Math.max(1, sec + deltaSec);
+                                        durSlider.value = secToHu(sec);
+
+                                        // optional aber sinnvoll: sofort übernehmen (Touch-Buttons ohne Slider-Release)
+                                        root.durationSoundEdited(Math.round(durSlider.value));
+                                    }
+
+                                    // Slider: wie vorher
                                     Slider {
                                         id: durSlider
                                         from: 1
@@ -1153,7 +1168,6 @@ Rectangle {
                                         stepSize: 1
                                         live: true
 
-                                        // ✅ relativ
                                         Layout.fillWidth: false
                                         Layout.preferredWidth: Math.max(60, Math.round(editRow.width * 0.47 * 0.75))
                                         Layout.alignment: Qt.AlignVCenter
@@ -1168,13 +1182,32 @@ Rectangle {
                                         }
                                     }
 
-                                    // Zeit: 20% der durationSoundBox-Breite
+                                    // [-] 1s
+                                    Rectangle {
+                                        width: 26; height: 22; radius: 4
+                                        color: "#e6e6e6"; border.color: "#777"
+                                        Layout.alignment: Qt.AlignVCenter
+
+                                        Text { anchors.centerIn: parent; text: "−"; color: "#000"; font.pixelSize: 16 }
+
+                                        Timer { id: minusRepeat; interval: 90; repeat: true; onTriggered: durRow.addSeconds(-1) }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            onClicked: durRow.addSeconds(-1)
+                                            onPressAndHold: { durRow.addSeconds(-1); minusRepeat.start(); }
+                                            onReleased: minusRepeat.stop()
+                                            onCanceled: minusRepeat.stop()
+                                        }
+                                    }
+
+                                    // Zeit: MM:SS (Sekundenanzeige!)
                                     Text {
                                         id: timeText
                                         Layout.preferredWidth: Math.max(36, Math.round(editRow.width * 0.45 * 0.20))
                                         Layout.alignment: Qt.AlignVCenter
 
-                                        Layout.leftMargin: -15   // <<< Abstand vom Slider (z.B. 6–12 testen)
+                                        Layout.leftMargin: -15
                                         Layout.bottomMargin: +2
 
                                         horizontalAlignment: Text.AlignRight
@@ -1182,10 +1215,30 @@ Rectangle {
                                         color: "#000000"
 
                                         text: {
-                                            var sec = Math.max(1, Math.min(1800, durSlider.value|0));
-                                            var m = Math.floor(sec / 60);
-                                            var s = sec % 60;
+                                            var hu = Math.max(1, Math.min(1800, durSlider.value|0));
+                                            var totalSec = Math.max(1, Math.round(hu * 0.6));
+                                            var m = Math.floor(totalSec / 60);
+                                            var s = totalSec % 60;
                                             return (m < 10 ? "0"+m : ""+m) + ":" + (s < 10 ? "0"+s : ""+s);
+                                        }
+                                    }
+
+                                    // [+] 1s
+                                    Rectangle {
+                                        width: 26; height: 22; radius: 4
+                                        color: "#e6e6e6"; border.color: "#777"
+                                        Layout.alignment: Qt.AlignVCenter
+
+                                        Text { anchors.centerIn: parent; text: "+"; color: "#000"; font.pixelSize: 16 }
+
+                                        Timer { id: plusRepeat; interval: 90; repeat: true; onTriggered: durRow.addSeconds(1) }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            onClicked: durRow.addSeconds(1)
+                                            onPressAndHold: { durRow.addSeconds(1); plusRepeat.start(); }
+                                            onReleased: plusRepeat.stop()
+                                            onCanceled: plusRepeat.stop()
                                         }
                                     }
                                 }

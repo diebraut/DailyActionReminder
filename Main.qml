@@ -220,7 +220,10 @@ ApplicationWindow {
             dbg("[SoundTaskManager] startFixed idx=", idx, " fire=", new Date(fireMs).toISOString(), " vol=", effectiveVol)
             const newId = SoundTaskManager.startFixedSoundTask(rawSound, txt, fireMs, effectiveVol, durationSound)
             dbg("[SoundTaskManager] startFixed -> id=", newId)
-            if (newId > 0) actionModel.setProperty(idx, "alarmId", newId)
+            if (newId > 0) {
+                actionModel.setProperty(idx, "alarmId", newId)
+                 saveNow()
+            }
             return
         }
 
@@ -237,7 +240,10 @@ ApplicationWindow {
         dbg("[SoundTaskManager] startInterval idx=", idx, " startMs=", startMs, " endMs=", endMs, " intervalSecs=", intervalSecs, " vol=", effectiveVol)
         const newId2 = SoundTaskManager.startIntervalSoundTask(rawSound, txt, startMs, endMs, intervalSecs, effectiveVol, durationSound)
         dbg("[SoundTaskManager] startInterval -> id=", newId2)
-        if (newId2 > 0) actionModel.setProperty(idx, "alarmId", newId2)
+        if (newId2 > 0) {
+            actionModel.setProperty(idx, "alarmId", newId2)
+            saveNow()
+        }
     }
 
     // -------------------------

@@ -50,9 +50,29 @@ public class AlarmReceiver extends BroadcastReceiver {
     private static final int BEEP_MAX_MS = 1000; // 1.2s
     private static final int WAKELOCK_MS = 10; // keep CPU awake briefly
 
-    // -------------------- SEQUENTIAL PLAYBACK QUEUE --------------------
+    // --- PLAYBACK STATE (global) ---
     private static final Object PLAY_LOCK = new Object();
-    private static final java.util.ArrayDeque<SoundEvent> PLAY_Q = new java.util.ArrayDeque<>();
+    // Currently playing sound (so cancel(id) can stop it immediately)
+    private static int s_playingRequestId = -1;
+    private static MediaPlayer s_playingMp = null;
+    private static PowerManager.WakeLock s_playingWl = null;
+    private static Handler s_playingHandler = null;
+    private static Runnable s_playingHardStop = null;
+    private static Runnable s_playingFinish = null;
+
+    // je nach deiner Implementierung: MediaPlayer oder SoundPool-StreamId
+    private static android.media.MediaPlayer s_mp = null;
+
+    private static final class QueueItem {
+        final SoundEvent e;
+        final int intervalCapMs; // -1 => no cap
+        QueueItem(SoundEvent e, int intervalCapMs) {
+            this.e = e;
+            this.intervalCapMs = intervalCapMs;
+        }
+    }
+
+    private static final java.util.ArrayDeque<QueueItem> PLAY_Q = new java.util.ArrayDeque<>();
     private static boolean PLAYING = false;
 
     // Immutable-ish data object (copy on read).
@@ -115,6 +135,118 @@ public class AlarmReceiver extends BroadcastReceiver {
         }
     }
 
+    public static void stopSoundForRequestId(Context ctx, int requestId) {
+        if (ctx == null) return;
+        if (requestId <= 0) return;
+
+        final Context app = ctx.getApplicationContext();
+
+        MediaPlayer mpToStop = null;
+
+        synchronized (PLAY_LOCK) {
+            // 1) queued items dieser requestId entfernen (PLAY_Q enthält QueueItem, NICHT SoundEvent)
+            if (!PLAY_Q.isEmpty()) {
+                final java.util.ArrayDeque<QueueItem> kept = new java.util.ArrayDeque<>();
+                while (!PLAY_Q.isEmpty()) {
+                    QueueItem qi = PLAY_Q.pollFirst();
+                    if (qi == null) continue;
+
+                    final SoundEvent e = qi.e;
+                    if (e != null && e.requestId == requestId) {
+                        Log.w(TAG, "stopSoundForRequestId: drop queued id=" + requestId);
+                    } else {
+                        kept.addLast(qi);
+                    }
+                }
+                PLAY_Q.addAll(kept);
+            }
+
+            // 2) aktuell spielenden Ton stoppen, wenn es derselbe requestId ist
+            if (s_playingRequestId == requestId) {
+                Log.w(TAG, "stopSoundForRequestId: stopping CURRENT id=" + requestId);
+
+                mpToStop = s_mp;
+
+                // refs löschen
+                s_mp = null;
+                s_playingRequestId = -1;
+
+                // Queue darf weiterlaufen
+                PLAYING = false;
+            }
+        }
+
+        // außerhalb des Locks stoppen
+        try { safeStopRelease(mpToStop); } catch (Throwable ignored) {}
+
+        // Queue fortsetzen (falls noch etwas drin ist)
+        try { playNextLocked(app); } catch (Throwable ignored) {}
+    }
+
+    /**
+     * Called from AlarmScheduler.cancel(...) where no Context is available.
+     * Stops the currently playing sound for the given requestId and removes queued items.
+     * (It cannot continue the queue because it has no Context.)
+     */
+    public static void stopPlaying(int requestId) {
+        if (requestId <= 0) return;
+
+        MediaPlayer mpToStop = null;
+        PowerManager.WakeLock wlToRelease = null;
+        Handler hToCancel = null;
+        Runnable hardStopToCancel = null;
+        Runnable finishToRun = null;
+
+        synchronized (PLAY_LOCK) {
+            // queued items entfernen
+            if (!PLAY_Q.isEmpty()) {
+                final java.util.ArrayDeque<QueueItem> kept = new java.util.ArrayDeque<>();
+                while (!PLAY_Q.isEmpty()) {
+                    QueueItem qi = PLAY_Q.pollFirst();
+                    if (qi == null) continue;
+                    final SoundEvent e = qi.e; // wichtig: e
+                    if (e != null && e.requestId == requestId) {
+                        Log.w(TAG, "stopPlaying: drop queued id=" + requestId);
+                    } else {
+                        kept.addLast(qi);
+                    }
+                }
+                PLAY_Q.addAll(kept);
+            }
+
+            // aktuell spielenden Ton stoppen
+            if (s_playingRequestId == requestId) {
+                Log.w(TAG, "stopPlaying: stopping CURRENT id=" + requestId);
+
+                mpToStop = s_playingMp;
+                wlToRelease = s_playingWl;
+                hToCancel = s_playingHandler;
+                hardStopToCancel = s_playingHardStop;
+                finishToRun = s_playingFinish;
+
+                s_playingMp = null;
+                s_playingWl = null;
+                s_playingHandler = null;
+                s_playingHardStop = null;
+                s_playingFinish = null;
+                s_playingRequestId = -1;
+
+                PLAYING = false;
+            }
+        }
+
+        // außerhalb des Locks stoppen
+        try {
+            if (hToCancel != null && hardStopToCancel != null) {
+                try { hToCancel.removeCallbacks(hardStopToCancel); } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+
+        try { safeStopRelease(mpToStop); } catch (Throwable ignored) {}
+        try { releaseWakelock(wlToRelease); } catch (Throwable ignored) {}
+        try { if (finishToRun != null) finishToRun.run(); } catch (Throwable ignored) {}
+    }
+
     @Override
     public void onReceive(Context context, Intent intent) {
         try {
@@ -142,19 +274,32 @@ public class AlarmReceiver extends BroadcastReceiver {
             Log.w(TAG, "ExpectedActionsXX: rescheduleNextFromIntent id=" + requestId);
             AlarmScheduler.rescheduleNextFromIntent(appCtx, intent);
 
-            // Play sequentially
-            SoundEvent e = new SoundEvent(requestId,intent.getStringExtra(AlarmScheduler.EXTRA_SOUND_NAME),
-                                          intent.getFloatExtra(AlarmScheduler.EXTRA_VOLUME01,1.0f),intent.getIntExtra(AlarmScheduler.EXTRA_DURATION_SOUND,0));
-            enqueueAndPlay(appCtx, e);
-        } catch (Throwable t) {
+            SoundEvent e = new SoundEvent(
+                    requestId,
+                    intent.getStringExtra(AlarmScheduler.EXTRA_SOUND_NAME),
+                    intent.getFloatExtra(AlarmScheduler.EXTRA_VOLUME01, 1.0f),
+                    intent.getIntExtra(AlarmScheduler.EXTRA_DURATION_SOUND, 0)
+            );
+
+            // intervalCapMs nur bei mode=interval, sonst -1
+            final String mode = intent.getStringExtra(AlarmScheduler.EXTRA_MODE);
+            final int intervalCapMs;
+            if ("interval".equals(mode)) {
+                final int intervalSec = intent.getIntExtra(AlarmScheduler.EXTRA_INTERVAL_SECONDS, 0);
+                intervalCapMs = (intervalSec > 0) ? (intervalSec * 1000) : -1;
+            } else {
+                intervalCapMs = -1;
+            }
+
+            enqueueAndPlay(appCtx, e, intervalCapMs);        } catch (Throwable t) {
             Log.e(TAG, "onReceive failed", t);
         }
     }
 
-    private static void enqueueAndPlay(Context ctx, SoundEvent e) {
+    private static void enqueueAndPlay(Context ctx, SoundEvent e, int intervalCapMs) {
         if (ctx == null || e == null) return;
         synchronized (PLAY_LOCK) {
-            PLAY_Q.addLast(e);
+            PLAY_Q.addLast(new QueueItem(e, intervalCapMs));
             if (PLAYING) return;
             PLAYING = true;
         }
@@ -162,21 +307,43 @@ public class AlarmReceiver extends BroadcastReceiver {
     }
 
     private static void playNextLocked(Context appCtx) {
-        final SoundEvent next;
+        final QueueItem qi;
         synchronized (PLAY_LOCK) {
-            next = PLAY_Q.pollFirst();
-            if (next == null) {
+            qi = PLAY_Q.pollFirst();
+            if (qi == null) {
                 PLAYING = false;
                 return;
             }
         }
 
-        // Play one sound; when done -> play next
-        playShortBeep(appCtx, next.soundName, next.volume01, () -> playNextLocked(appCtx));
+        final SoundEvent next = qi.e;
+
+        // duration: hundredth-minutes => ms (1/100 min = 600ms)
+        int durMs = (next.duration > 0) ? (next.duration * 600) : 0;
+
+        // Cap: darf nicht länger als Interval sein (nur wenn intervalCapMs > 0)
+        if (qi.intervalCapMs > 0 && durMs > 0) {
+            durMs = Math.min(durMs, qi.intervalCapMs);
+        }
+
+        // Fallback: wenn duration nicht gesetzt -> bisheriges Verhalten
+        final int stopAfterMs = (durMs > 0) ? durMs : BEEP_MAX_MS;
+
+        playShortBeep(appCtx, next.requestId, next.soundName, next.volume01, stopAfterMs, () -> playNextLocked(appCtx));
+    }    // Overload with completion callback (used by sequential queue)
+
+    // Wrapper: "einmal kurz" (ohne erzwungene Dauer)
+    private static void playShortBeep(Context ctx,int requestId, String soundName, float volume01) {
+        playShortBeep(ctx,requestId, soundName, volume01, /*stopAfterMs=*/0, /*onDone=*/null);
     }
 
-    // Overload with completion callback (used by sequential queue)
-    private static void playShortBeep(Context ctx, String soundName, float volume01, Runnable onDone) {
+    // Optionaler Wrapper: mit Dauer aber ohne Callback
+    private static void playShortBeep(Context ctx, int requestId, String soundName, float volume01, int stopAfterMs) {
+        playShortBeep(ctx, requestId, soundName, volume01, stopAfterMs, /*onDone=*/null);
+    }
+
+    // EINZIGE Implementierung
+    private static void playShortBeep(Context ctx, int requestId, String soundName, float volume01, int stopAfterMs, Runnable onDone) {
         final PowerManager.WakeLock[] wlRef = new PowerManager.WakeLock[1];
         final MediaPlayer[] mpRef = new MediaPlayer[1];
         final boolean[] doneOnce = new boolean[]{false};
@@ -222,41 +389,84 @@ public class AlarmReceiver extends BroadcastReceiver {
 
             final Handler h = new Handler(Looper.getMainLooper());
 
-            mp.setOnCompletionListener(m -> {
-                Log.w(TAG, "MediaPlayer: onCompletion");
+            // ------------------------------------------------------------
+            // PATCH START: durationSound korrekt (mehrfach abspielen)
+            // - stopAfterMs <= 0  => Sound 1x abspielen, Cleanup bei Completion
+            // - stopAfterMs > 0   => Sound loopen + HardStop nach stopAfterMs
+            // ------------------------------------------------------------
+            final boolean useHardStop = (stopAfterMs > 0);
+
+            try { mp.setLooping(useHardStop); } catch (Throwable ignored) {}
+
+            final Runnable clearPlayingState = () -> {
+                synchronized (PLAY_LOCK) {
+                    if (s_playingRequestId == requestId) {
+                        s_playingRequestId = -1;
+                        s_playingMp = null;
+                        s_playingWl = null;
+                        s_playingHandler = null;
+                        s_playingHardStop = null;
+                        s_playingFinish = null;
+                    }
+                    PLAYING = false;
+                }
+            };
+
+            final Runnable hardStop = () -> {
+                Log.w(TAG, "playShortBeep: HARD STOP after " + stopAfterMs
+                        + "ms. isPlaying=" + safeIsPlaying(mpRef[0]));
                 safeStopRelease(mpRef[0]);
                 releaseWakelock(wlRef[0]);
+                clearPlayingState.run();
                 finish.run();
-            });
+            };
 
-            mp.setOnErrorListener((m, what, extra) -> {
-                Log.e(TAG, "MediaPlayer: onError what=" + what + " extra=" + extra);
-                safeStopRelease(mpRef[0]);
-                releaseWakelock(wlRef[0]);
-                finish.run();
-                return true;
-            });
+            // Bei "einmal abspielen" cleanup über Completion
+            try {
+                mp.setOnCompletionListener(m -> {
+                    Log.w(TAG, "playShortBeep: COMPLETED requestId=" + requestId);
+                    safeStopRelease(mpRef[0]);
+                    releaseWakelock(wlRef[0]);
+                    clearPlayingState.run();
+                    finish.run();
+                });
+            } catch (Throwable ignored) {}
 
-            // Hard stop
-            h.postDelayed(() -> {
-                Log.w(TAG, "playShortBeep: HARD STOP after " + BEEP_MAX_MS + "ms. isPlaying=" + safeIsPlaying(mpRef[0]));
-                safeStopRelease(mpRef[0]);
-                releaseWakelock(wlRef[0]);
-                finish.run();
-            }, BEEP_MAX_MS);
+            synchronized (PLAY_LOCK) {
+                s_playingRequestId = requestId;
+                s_playingMp = mpRef[0];
+                s_playingWl = wlRef[0];
+                s_playingHandler = h;
+                s_playingHardStop = useHardStop ? hardStop : null;
+                s_playingFinish = finish;
+            }
 
-            Log.w(TAG, "playShortBeep: START calling mp.start()");
+            if (useHardStop) {
+                h.postDelayed(hardStop, stopAfterMs);
+            }
+
+            Log.w(TAG, "playShortBeep: START calling mp.start() stopAfterMs=" + stopAfterMs
+                    + " loop=" + useHardStop);
             mp.start();
-
+            // PATCH END
         } catch (Throwable t) {
             Log.e(TAG, "playShortBeep failed", t);
             safeStopRelease(mpRef[0]);
             releaseWakelock(wlRef[0]);
+            synchronized (PLAY_LOCK) {
+                if (s_playingRequestId == requestId) {
+                    s_playingRequestId = -1;
+                    s_playingMp = null;
+                    s_playingWl = null;
+                    s_playingHandler = null;
+                    s_playingHardStop = null;
+                    s_playingFinish = null;
+                }
+                PLAYING = false;
+            }
             finish.run();
         }
     }
-
-
     // -------------------- NOTIFICATION --------------------
     private static void ensureNotificationChannel(Context ctx) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -339,73 +549,6 @@ public class AlarmReceiver extends BroadcastReceiver {
                 Log.w(TAG, "WakeLock released");
             }
         } catch (Throwable ignored) {}
-    }
-
-    private static void playShortBeep(Context ctx, String soundName, float volume01) {
-        final PowerManager.WakeLock[] wlRef = new PowerManager.WakeLock[1];
-        final MediaPlayer[] mpRef = new MediaPlayer[1];
-
-        try {
-            wlRef[0] = acquireShortWakelock(ctx);
-
-            volume01 = clamp01(volume01);
-            if (volume01 <= 0.0f) {
-                Log.w(TAG, "playShortBeep: MUTED (vol=0) -> skip soundName=" + soundName);
-                releaseWakelock(wlRef[0]);
-                return;
-            }
-
-            int resId = 0;
-            if (soundName != null && !soundName.trim().isEmpty()) {
-                resId = ctx.getResources().getIdentifier(soundName, "raw", ctx.getPackageName());
-                Log.w(TAG, "resolve raw '" + soundName + "' -> resId=" + resId);
-            }
-            if (resId == 0) {
-                Log.w(TAG, "raw resource not found for '" + soundName + "', fallback to 'bell'");
-                resId = ctx.getResources().getIdentifier("bell", "raw", ctx.getPackageName());
-                Log.w(TAG, "resolve raw 'bell' -> resId=" + resId);
-            }
-            if (resId == 0) {
-                Log.e(TAG, "No usable raw sound found (soundName=" + soundName + ")");
-                releaseWakelock(wlRef[0]);
-                return;
-            }
-
-            MediaPlayer mp = createAlarmPlayerFromRaw(ctx, resId);
-            mpRef[0] = mp;
-
-            try { mp.setVolume(volume01, volume01); } catch (Throwable ignored) {}
-
-            final Handler h = new Handler(Looper.getMainLooper());
-
-            mp.setOnCompletionListener(m -> {
-                Log.w(TAG, "MediaPlayer: onCompletion");
-                safeStopRelease(mpRef[0]);
-                releaseWakelock(wlRef[0]);
-            });
-
-            mp.setOnErrorListener((m, what, extra) -> {
-                Log.e(TAG, "MediaPlayer: onError what=" + what + " extra=" + extra);
-                safeStopRelease(mpRef[0]);
-                releaseWakelock(wlRef[0]);
-                return true;
-            });
-
-            // Hard stop
-            h.postDelayed(() -> {
-                Log.w(TAG, "playShortBeep: HARD STOP after " + BEEP_MAX_MS + "ms. isPlaying=" + safeIsPlaying(mpRef[0]));
-                safeStopRelease(mpRef[0]);
-                releaseWakelock(wlRef[0]);
-            }, BEEP_MAX_MS);
-
-            Log.w(TAG, "playShortBeep: START calling mp.start()");
-            mp.start();
-
-        } catch (Throwable t) {
-            Log.e(TAG, "playShortBeep failed", t);
-            safeStopRelease(mpRef[0]);
-            releaseWakelock(wlRef[0]);
-        }
     }
 
     private static MediaPlayer createAlarmPlayerFromRaw(Context ctx, int resId) throws Exception {
