@@ -1035,212 +1035,204 @@ Rectangle {
                         // ---- SOUND ----
                         SectionHeader { title: "Ton" }
 
-                        GridLayout {
-                            id: soundRow
-                            Layout.fillWidth: true
-                            columns: 2
-                            columnSpacing: 10
-                            rowSpacing: 0
 
-                            // -------- LEFT: Icon + Soundname Button (≈45%) --------
-                            RowLayout {
-                                Layout.preferredWidth: Math.floor(editRow.width * 0.45)
-                                Layout.maximumWidth: Layout.preferredWidth
-                                Layout.fillWidth: false
+                        // -------- LEFT: Icon + Soundname Button (≈45%) --------
+                        RowLayout {
+                            Layout.preferredWidth: Math.floor(editRow.width * 0.9 )
+                            Layout.maximumWidth: Layout.preferredWidth
+                            Layout.fillWidth: false
+                            Layout.alignment: Qt.AlignVCenter
+                            spacing: 10
+
+                            Item {
+                                implicitWidth: 30
+                                implicitHeight: 30
+                                Layout.preferredWidth: 30
+                                Layout.preferredHeight: 30
                                 Layout.alignment: Qt.AlignVCenter
-                                spacing: 10
 
-                                Item {
-                                    implicitWidth: 30
-                                    implicitHeight: 30
-                                    Layout.preferredWidth: 30
-                                    Layout.preferredHeight: 30
-                                    Layout.alignment: Qt.AlignVCenter
-
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: "🔊"
-                                        font.pixelSize: 24
-                                        color: "#222222"
-                                    }
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: function(mouse) {
-                                            mouse.accepted = true
-                                            root.previewSoundRequested(root.soundDisplayName,durationSound)
-                                        }
-                                    }
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "🔊"
+                                    font.pixelSize: 24
+                                    color: "#222222"
                                 }
 
-                                Rectangle {
-                                    id: soundNameButton
-                                    height: 36
-                                    radius: 8
-                                    color: "#ffffff"
-                                    border.color: "#b0b0b0"
-                                    Layout.fillWidth: true
-                                    Layout.alignment: Qt.AlignVCenter
-
-                                    RowLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 10
-                                        spacing: 8
-
-                                        Text {
-                                            text: root.soundDisplayName
-                                            font.pixelSize: 11
-                                            color: "#000000"
-                                            elide: Text.ElideRight
-                                            Layout.fillWidth: true
-                                            verticalAlignment: Text.AlignVCenter
-                                        }
-
-                                        Text {
-                                            text: "▾"
-                                            font.pixelSize: 12
-                                            color: "#444444"
-                                            Layout.alignment: Qt.AlignVCenter
-                                        }
-                                    }
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: function(mouse) {
-                                            mouse.accepted = true
-                                            soundDialog.open()
-                                        }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: function(mouse) {
+                                        mouse.accepted = true
+                                        root.previewSoundRequested(root.soundDisplayName,durationSound)
                                     }
                                 }
                             }
 
-                            // -------- RIGHT: Dauer + mm:ss + Slider (≈45%) --------
-                            ColumnLayout {
-                                id: durationSoundBox
-                                Layout.preferredWidth: Math.floor(editRow.width * 0.45)
-                                Layout.maximumWidth: Layout.preferredWidth
-                                Layout.fillWidth: false
+                            Rectangle {
+                                id: soundNameButton
+                                height: 36
+                                radius: 8
+                                color: "#ffffff"
+                                border.color: "#b0b0b0"
+                                Layout.fillWidth: true
                                 Layout.alignment: Qt.AlignVCenter
 
-                                spacing: 4
-                                Layout.topMargin: -15
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    spacing: 8
 
-                                //Item { Layout.fillHeight: true }   // Zentrierung nach oben
+                                    Text {
+                                        text: root.soundDisplayName
+                                        font.pixelSize: 11
+                                        color: "#000000"
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
 
-                                Text {
-                                    id: durTitle
-                                    text: "Dauer (Minuten)"
-                                    font.pixelSize: 12
-                                    color: "#444444"
-                                    Layout.alignment: Qt.AlignLeft
-                                    Layout.leftMargin: +5
-
+                                    Text {
+                                        text: "▾"
+                                        font.pixelSize: 12
+                                        color: "#444444"
+                                        Layout.alignment: Qt.AlignVCenter
+                                    }
                                 }
 
-                                RowLayout {
-                                    id: durRow
-                                    Layout.fillWidth: true
-                                    Layout.alignment: Qt.AlignLeft
-                                    spacing: 10
-
-                                    // helpers: durationSound ist Hundertstel-Minuten (1..1800)
-                                    function clampHu(x) { return Math.max(1, Math.min(1800, x|0)); }
-                                    function huToSec(hu) { return Math.max(1, Math.round(hu * 0.6)); }   // 1/100 min = 0.6s
-                                    function secToHu(sec) { return clampHu(Math.round(sec / 0.6)); }
-
-                                    function addSeconds(deltaSec) {
-                                        var hu = clampHu(durSlider.value|0);
-                                        var sec = huToSec(hu);
-                                        sec = Math.max(1, sec + deltaSec);
-                                        durSlider.value = secToHu(sec);
-
-                                        // optional aber sinnvoll: sofort übernehmen (Touch-Buttons ohne Slider-Release)
-                                        root.durationSoundEdited(Math.round(durSlider.value));
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: function(mouse) {
+                                        mouse.accepted = true
+                                        soundDialog.open()
                                     }
+                                }
+                            }
+                        }
 
-                                    // Slider: wie vorher
-                                    Slider {
-                                        id: durSlider
-                                        from: 1
-                                        to: 1800
-                                        stepSize: 1
-                                        live: true
+                        // -------- RIGHT: Dauer + mm:ss + Slider (≈45%) --------
+                        RowLayout {
+                            id: durationSoundBox
+                            Layout.preferredWidth: Math.floor(editRow.width * 0.95)
+                            Layout.maximumWidth: Layout.preferredWidth
+                            Layout.fillWidth: false
+                            Layout.alignment: Qt.AlignVCenter
 
-                                        Layout.fillWidth: false
-                                        Layout.preferredWidth: Math.max(60, Math.round(editRow.width * 0.47 * 0.75))
-                                        Layout.alignment: Qt.AlignVCenter
+                            spacing: 4
+                            //Layout.topMargin: -15
 
-                                        value: Math.max(1, Math.min(1800, root.durationSound || 1))
+                            //Item { Layout.fillHeight: true }   // Zentrierung nach oben
 
-                                        onPressedChanged: {
-                                            if (!pressed) {
-                                                const v = Math.round(value)
-                                                root.durationSoundEdited(v)
-                                            }
-                                        }
+                            Text {
+                                id: durTitle
+                                text: "Dauer"
+                                font.pixelSize: 12
+                                font.bold: true
+                                color: "#444444"
+                                Layout.alignment: Qt.AlignLeft
+                                //Layout.leftMargin: +5
+
+                            }
+
+
+                            // helpers: durationSound ist Hundertstel-Minuten (1..1800)
+                            function clampHu(x) { return Math.max(1, Math.min(1800, x|0)); }
+                            function huToSec(hu) { return Math.max(1, Math.round(hu * 0.6)); }   // 1/100 min = 0.6s
+                            function secToHu(sec) { return clampHu(Math.round(sec / 0.6)); }
+
+                            function addSeconds(deltaSec) {
+                                var hu = clampHu(durSlider.value|0);
+                                var sec = huToSec(hu);
+                                sec = Math.max(1, sec + deltaSec);
+                                durSlider.value = secToHu(sec);
+
+                                // optional aber sinnvoll: sofort übernehmen (Touch-Buttons ohne Slider-Release)
+                                root.durationSoundEdited(Math.round(durSlider.value));
+                            }
+                            // [-] 1s
+                            Rectangle {
+                                id: minusId
+                                //anchors.left: durTitle.right
+                                Layout.leftMargin: -5
+                                width: 26; height: 22; radius: 4
+                                color: "#e6e6e6"; border.color: "#777"
+                                Layout.alignment: Qt.AlignVCenter
+
+                                Text { anchors.centerIn: parent; text: "−"; color: "#000"; font.pixelSize: 16 }
+
+                                Timer { id: minusRepeat; interval: 90; repeat: true; onTriggered: durationSoundBox.addSeconds(-1) }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: durationSoundBox.addSeconds(-1)
+                                    onPressAndHold: { durationSoundBox.addSeconds(-1); minusRepeat.start(); }
+                                    onReleased: minusRepeat.stop()
+                                    onCanceled: minusRepeat.stop()
+                                }
+                            }
+
+                            // Slider: wie vorher
+                            Slider {
+                                id: durSlider
+                                from: 1
+                                to: 3000
+                                stepSize: 1
+                                live: true
+                                //anchors.left: minusId.right
+                                Layout.leftMargin: -10
+                                Layout.fillWidth: false
+                                Layout.preferredWidth: Math.max(60, Math.round(editRow.width * 0.40))
+                                Layout.alignment: Qt.AlignVCenter
+
+                                value: Math.max(1, Math.min(1800, root.durationSound || 1))
+
+                                onPressedChanged: {
+                                    if (!pressed) {
+                                        const v = Math.round(value)
+                                        root.durationSoundEdited(v)
                                     }
+                                }
+                            }
 
-                                    // [-] 1s
-                                    Rectangle {
-                                        width: 26; height: 22; radius: 4
-                                        color: "#e6e6e6"; border.color: "#777"
-                                        Layout.alignment: Qt.AlignVCenter
+                            // [+] 1s
+                            Rectangle {
+                                id: plusId
+                                Layout.leftMargin: -22
+                                width: 26; height: 22; radius: 4
+                                color: "#e6e6e6"; border.color: "#777"
+                                Layout.alignment: Qt.AlignVCenter
 
-                                        Text { anchors.centerIn: parent; text: "−"; color: "#000"; font.pixelSize: 16 }
+                                Text { anchors.centerIn: parent; text: "+"; color: "#000"; font.pixelSize: 16 }
 
-                                        Timer { id: minusRepeat; interval: 90; repeat: true; onTriggered: durRow.addSeconds(-1) }
+                                Timer { id: plusRepeat; interval: 90; repeat: true; onTriggered: durationSoundBox.addSeconds(1) }
 
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            onClicked: durRow.addSeconds(-1)
-                                            onPressAndHold: { durRow.addSeconds(-1); minusRepeat.start(); }
-                                            onReleased: minusRepeat.stop()
-                                            onCanceled: minusRepeat.stop()
-                                        }
-                                    }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: durationSoundBox.addSeconds(1)
+                                    onPressAndHold: { durationSoundBox.addSeconds(1); plusRepeat.start(); }
+                                    onReleased: plusRepeat.stop()
+                                    onCanceled: plusRepeat.stop()
+                                }
+                            }
+                            // Zeit: MM:SS (Sekundenanzeige!)
+                            Text {
+                                id: timeText
+                                Layout.preferredWidth: Math.max(36, Math.round(editRow.width * 0.45 * 0.20))
+                                Layout.alignment: Qt.AlignVCenter
 
-                                    // Zeit: MM:SS (Sekundenanzeige!)
-                                    Text {
-                                        id: timeText
-                                        Layout.preferredWidth: Math.max(36, Math.round(editRow.width * 0.45 * 0.20))
-                                        Layout.alignment: Qt.AlignVCenter
+                                Layout.leftMargin: 25
+                                Layout.bottomMargin: +2
 
-                                        Layout.leftMargin: -15
-                                        Layout.bottomMargin: +2
+                                horizontalAlignment: Text.AlignRight
+                                font.pixelSize: 14
+                                color: "#000000"
 
-                                        horizontalAlignment: Text.AlignRight
-                                        font.pixelSize: 14
-                                        color: "#000000"
-
-                                        text: {
-                                            var hu = Math.max(1, Math.min(1800, durSlider.value|0));
-                                            var totalSec = Math.max(1, Math.round(hu * 0.6));
-                                            var m = Math.floor(totalSec / 60);
-                                            var s = totalSec % 60;
-                                            return (m < 10 ? "0"+m : ""+m) + ":" + (s < 10 ? "0"+s : ""+s);
-                                        }
-                                    }
-
-                                    // [+] 1s
-                                    Rectangle {
-                                        width: 26; height: 22; radius: 4
-                                        color: "#e6e6e6"; border.color: "#777"
-                                        Layout.alignment: Qt.AlignVCenter
-
-                                        Text { anchors.centerIn: parent; text: "+"; color: "#000"; font.pixelSize: 16 }
-
-                                        Timer { id: plusRepeat; interval: 90; repeat: true; onTriggered: durRow.addSeconds(1) }
-
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            onClicked: durRow.addSeconds(1)
-                                            onPressAndHold: { durRow.addSeconds(1); plusRepeat.start(); }
-                                            onReleased: plusRepeat.stop()
-                                            onCanceled: plusRepeat.stop()
-                                        }
-                                    }
+                                text: {
+                                    var hu = Math.max(1, Math.min(3000, durSlider.value|0));
+                                    var totalSec = Math.max(1, Math.round(hu * 0.6));
+                                    var m = Math.floor(totalSec / 60);
+                                    var s = totalSec % 60;
+                                    return (m < 10 ? "0"+m : ""+m) + ":" + (s < 10 ? "0"+s : ""+s) + "min";
                                 }
                             }
                         }

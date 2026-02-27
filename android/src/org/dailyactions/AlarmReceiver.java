@@ -250,17 +250,21 @@ public class AlarmReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         try {
+            final Context appCtx = context.getApplicationContext();
+
             if (context == null || intent == null) {
                 Log.e(TAG, "onReceive: context or intent is NULL");
                 return;
             }
 
-            final Context appCtx = context.getApplicationContext();
-
             final int requestId = intent.getIntExtra(
                     AlarmScheduler.EXTRA_REQUEST_ID,
                     intent.getIntExtra(AlarmScheduler.EXTRA_NOTIF_ID, -1)
             );
+            PowerManager pm = (PowerManager) appCtx.getSystemService(Context.POWER_SERVICE);
+            boolean interactive = pm != null && pm.isInteractive();
+            Log.w(TAG, "ONRECEIVE id=" + requestId + " interactive=" + interactive + " now=" + new java.util.Date());
+
             Log.w(TAG, "ONRECEIVE id=" + requestId +
                   " duration=" + intent.getIntExtra(AlarmScheduler.EXTRA_DURATION_SOUND, 0) +
                   " volume=" + intent.getFloatExtra(AlarmScheduler.EXTRA_VOLUME01, 1f) +
