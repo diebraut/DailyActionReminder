@@ -309,16 +309,13 @@ public class AlarmScheduler {
         try {
             final Context appCtx = ctx.getApplicationContext();
 
-            final int requestId = intent.getIntExtra(EXTRA_REQUEST_ID,
-                    intent.getIntExtra(EXTRA_NOTIF_ID, -1));
-
-            Log.w(TAG, "RESCHEDULE done id=" + requestId);
+            final int requestId = intent.getIntExtra(
+                    EXTRA_REQUEST_ID,
+                    intent.getIntExtra(EXTRA_NOTIF_ID, -1)
+            );
+            if (requestId <= 0) return;
 
             final String mode = intent.getStringExtra(EXTRA_MODE);
-            if (!"interval".equalsIgnoreCase(mode)) return;
-
-            final int intervalSec = readIntervalSeconds(intent);
-            if (requestId <= 0 || intervalSec <= 0) return;
 
             final String soundName = intent.getStringExtra(EXTRA_SOUND_NAME);
             final String title     = intent.getStringExtra(EXTRA_TITLE);
@@ -331,25 +328,34 @@ public class AlarmScheduler {
             final float vol01 = intent.getFloatExtra(EXTRA_VOLUME01, 1.0f);
             final int durationSound = intent.getIntExtra(EXTRA_DURATION_SOUND, 1);
 
-            final long intervalMs = intervalSec * 1000L;
-
-            // 🔴 DAS IST DER WICHTIGSTE FIX
             final long lastPlannedTrigger =
                     intent.getLongExtra(EXTRA_TRIGGER_AT_MILLIS, -1L);
 
             if (lastPlannedTrigger <= 0) {
-                logW("rescheduleNext: missing EXTRA_TRIGGER_AT_MILLIS -> fallback abort id=" + requestId);
+                logW("rescheduleNext: missing EXTRA_TRIGGER_AT_MILLIS -> abort id=" + requestId);
                 return;
             }
 
-            // ✅ Phase-stabil: nächster Tick = letzter geplanter Tick + Intervall
-            final long next = lastPlannedTrigger + intervalMs;
+            long next;
+            int intervalSec = intent.getIntExtra(EXTRA_INTERVAL_SECONDS, 0);
+
+            if ("fixedTime".equalsIgnoreCase(mode)) {
+                next = lastPlannedTrigger + 24L * 60L * 60L * 1000L;
+            } else if ("interval".equalsIgnoreCase(mode)) {
+                if (intervalSec <= 0) {
+                    logW("rescheduleNext: invalid intervalSec for id=" + requestId);
+                    return;
+                }
+                next = lastPlannedTrigger + intervalSec * 1000L;
+            } else {
+                logW("rescheduleNext: unknown mode=" + mode + " id=" + requestId);
+                return;
+            }
 
             logI("rescheduleNext: id=" + requestId
+                    + " mode=" + mode
                     + " lastPlanned=" + lastPlannedTrigger
-                    + " next=" + next
-                    + " delta=" + intervalMs
-            );
+                    + " next=" + next);
 
             scheduleWithParams(
                     appCtx,
@@ -357,11 +363,11 @@ public class AlarmScheduler {
                     (soundName != null) ? soundName : "bell",
                     requestId,
                     (title != null) ? title : "DailyActions",
-                    (text  != null) ? text  : "",
-                    "interval",
+                    (text != null) ? text : "",
+                    (mode != null) ? mode : "interval",
                     (fixedTime != null) ? fixedTime : "00:00",
                     (startTime != null) ? startTime : "",
-                    (endTime   != null) ? endTime   : "",
+                    (endTime != null) ? endTime : "",
                     intervalSec,
                     vol01,
                     durationSound

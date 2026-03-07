@@ -65,8 +65,6 @@ private:
     int allocId();
     void freeId(int id);
 
-    void armAutoFreeFixed(int id, qint64 fixedTimeMs);
-
     LogQML *logInst = new LogQML();
     void alogW(const char* fmt, ...);
 

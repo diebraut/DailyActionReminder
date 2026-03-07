@@ -135,36 +135,6 @@ void SoundTaskManagerAndroid::freeId(int id)
     freeId_locked(id);
 }
 
-void SoundTaskManagerAndroid::armAutoFreeFixed(int id, qint64 fixedTimeMs)
-{
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    qint64 delayMs = fixedTimeMs - now;
-    if (delayMs < 0) delayMs = 0;
-    delayMs += 60000;
-
-    QTimer *t = new QTimer(this);
-    t->setSingleShot(true);
-
-    {
-        QMutexLocker lk(&m_mutex);
-        if (auto it = m_autoFreeTimers.find(id); it != m_autoFreeTimers.end()) {
-            if (it.value()) {
-                it.value()->stop();
-                it.value()->deleteLater();
-            }
-            m_autoFreeTimers.erase(it);
-        }
-        m_autoFreeTimers.insert(id, t);
-    }
-
-    connect(t, &QTimer::timeout, this, [this, id]() {
-        freeId(id);
-        emit logLine(QString("autoFreeFixed(): freed id=%1").arg(id));
-    });
-
-    t->start(static_cast<int>(std::min<qint64>(delayMs, std::numeric_limits<int>::max())));
-}
-
 bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
                                                  const QString &soundName,
                                                  int requestId,
@@ -346,8 +316,6 @@ int SoundTaskManagerAndroid::startFixedSoundTask(const QString &rawSound,
         freeId(id);
         return -1;
     }
-
-    armAutoFreeFixed(id, fixedTimeMs);
     return id;
 }
 
