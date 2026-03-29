@@ -337,16 +337,27 @@ public class AlarmScheduler {
             }
 
             long next;
-            int intervalSec = intent.getIntExtra(EXTRA_INTERVAL_SECONDS, 0);
+            int intervalSec = readIntervalSeconds(intent);
 
             if ("fixedTime".equalsIgnoreCase(mode)) {
                 next = lastPlannedTrigger + 24L * 60L * 60L * 1000L;
+
             } else if ("interval".equalsIgnoreCase(mode)) {
                 if (intervalSec <= 0) {
                     logW("rescheduleNext: invalid intervalSec for id=" + requestId);
                     return;
                 }
-                next = lastPlannedTrigger + intervalSec * 1000L;
+
+                // Nächsten Trigger anhand des Zeitfensters berechnen
+                // Basis ist der zuletzt geplante Trigger (+1 ms), damit wir sicher
+                // den nächsten Tick NACH dem gerade ausgelösten Alarm bekommen.
+                next = computeNextIntervalFireMs(
+                        lastPlannedTrigger + 1L,
+                        (startTime != null) ? startTime : "",
+                        (endTime != null) ? endTime : "",
+                        intervalSec
+                );
+
             } else {
                 logW("rescheduleNext: unknown mode=" + mode + " id=" + requestId);
                 return;
@@ -355,7 +366,11 @@ public class AlarmScheduler {
             logI("rescheduleNext: id=" + requestId
                     + " mode=" + mode
                     + " lastPlanned=" + lastPlannedTrigger
-                    + " next=" + next);
+                    + " next=" + next
+                    + " fixed=" + fixedTime
+                    + " start=" + startTime
+                    + " end=" + endTime
+                    + " intervalSec=" + intervalSec);
 
             scheduleWithParams(
                     appCtx,
