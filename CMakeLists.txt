@@ -4,6 +4,10 @@ project(DailyActionReminder VERSION 0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(IOS)
+    enable_language(OBJCXX)
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 Multimedia)
 qt_standard_project_setup(REQUIRES 6.8)
 
@@ -16,6 +20,20 @@ qt_add_executable(appDailyActionReminder
     soundtaskmanager.h soundtaskmanager.cpp
     soundtaskmanagerfactory.h soundtaskmanagerfactory.cpp
     soundtaskmanagerdesktop.h soundtaskmanagerdesktop.cpp
+)
+
+set(DAILY_ACTION_SOUND_FILES
+    sounds/bell.wav
+    sounds/pop_click.wav
+    sounds/airy_whoosh.wav
+    sounds/beep_short.wav
+    sounds/beep_double.wav
+    sounds/low_gong.wav
+    sounds/marimba_hit.wav
+    sounds/soft_chime.wav
+    sounds/soft_chime_qt.wav
+    sounds/triangle_ping.wav
+    sounds/wood_tap.wav
 )
 
 # QML-Modul (NUR QML-Dateien hier rein; keine Android-C++ SOURCES!)
@@ -31,16 +49,7 @@ qt_add_qml_module(appDailyActionReminder
 qt_add_resources(appDailyActionReminder "app_root_qrc"
     PREFIX "/"
     FILES
-        sounds/bell.wav
-        sounds/pop_click.wav
-        sounds/airy_whoosh.wav
-        sounds/beep_short.wav
-        sounds/beep_double.wav
-        sounds/low_gong.wav
-        sounds/marimba_hit.wav
-        sounds/soft_chime.wav
-        sounds/triangle_ping.wav
-        sounds/wood_tap.wav
+        ${DAILY_ACTION_SOUND_FILES}
 )
 
 target_link_libraries(appDailyActionReminder
@@ -70,6 +79,23 @@ if(ANDROID)
     # Java/Manifest/Gradle unter ./android (android/src/org/dailyactions/...)
     set_target_properties(appDailyActionReminder PROPERTIES
         QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
+    )
+endif()
+
+# iOS-only: native local notifications + sound files as real bundle resources.
+if(IOS)
+    target_sources(appDailyActionReminder PRIVATE
+        soundtaskmanagerios.h
+        soundtaskmanagerios.mm
+        ${DAILY_ACTION_SOUND_FILES}
+    )
+
+    set_source_files_properties(${DAILY_ACTION_SOUND_FILES}
+        PROPERTIES MACOSX_PACKAGE_LOCATION Resources
+    )
+
+    target_link_libraries(appDailyActionReminder PRIVATE
+        "-framework UserNotifications"
     )
 endif()
 
