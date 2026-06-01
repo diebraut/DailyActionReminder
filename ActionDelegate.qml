@@ -474,6 +474,12 @@ Rectangle {
         property int preferredInputWidth: 180
         signal valueEdited(string v)
 
+        function commit() {
+            itf.valueEdited(inputITF.text)
+            inputITF.focus = false
+            Qt.inputMethod.hide()
+        }
+
         width: parent ? parent.width : 300
         implicitHeight: rowITF.implicitHeight
 
@@ -506,7 +512,7 @@ Rectangle {
                     id: inputITF
                     anchors.fill: parent
                     anchors.leftMargin: 10
-                    anchors.rightMargin: 10
+                    anchors.rightMargin: doneITF.visible ? 42 : 10
                     verticalAlignment: TextInput.AlignVCenter
                     font.pixelSize: 14
                     color: "#222222"
@@ -521,7 +527,33 @@ Rectangle {
                         when: !inputITF.activeFocus
                     }
 
+                    onAccepted: itf.commit()
                     onEditingFinished: itf.valueEdited(text)
+                }
+
+                Rectangle {
+                    id: doneITF
+                    visible: inputITF.activeFocus
+                    anchors.right: parent.right
+                    anchors.rightMargin: 5
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 30
+                    height: 26
+                    radius: 7
+                    color: "#4CAF50"
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "✓"
+                        color: "white"
+                        font.pixelSize: 16
+                        font.bold: true
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: itf.commit()
+                    }
                 }
 
                 Text {
@@ -547,6 +579,13 @@ Rectangle {
         property int minInputWidth: 140
         property int preferredInputWidth: 180
         signal valueEdited(int v)
+
+        function commit() {
+            const v = parseInt(inputINF.text)
+            if (!isNaN(v)) inf.valueEdited(Math.max(inf.minValue, Math.min(inf.maxValue, v)))
+            inputINF.focus = false
+            Qt.inputMethod.hide()
+        }
 
         width: parent ? parent.width : 300
         implicitHeight: rowINF.implicitHeight
@@ -580,12 +619,12 @@ Rectangle {
                     id: inputINF
                     anchors.fill: parent
                     anchors.leftMargin: 10
-                    anchors.rightMargin: 10
+                    anchors.rightMargin: doneINF.visible ? 42 : 10
                     verticalAlignment: TextInput.AlignVCenter
                     font.pixelSize: 14
                     color: "#222222"
                     selectByMouse: true
-                    inputMethodHints: Qt.ImhDigitsOnly
+                    inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhPreferNumbers
                     validator: IntValidator { bottom: inf.minValue; top: inf.maxValue }
 
                     Binding {
@@ -595,9 +634,35 @@ Rectangle {
                         when: !inputINF.activeFocus
                     }
 
+                    onAccepted: inf.commit()
                     onEditingFinished: {
                         const v = parseInt(text)
                         if (!isNaN(v)) inf.valueEdited(v)
+                    }
+                }
+
+                Rectangle {
+                    id: doneINF
+                    visible: inputINF.activeFocus
+                    anchors.right: parent.right
+                    anchors.rightMargin: 5
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 30
+                    height: 26
+                    radius: 7
+                    color: "#4CAF50"
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "✓"
+                        color: "white"
+                        font.pixelSize: 16
+                        font.bold: true
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: inf.commit()
                     }
                 }
             }
