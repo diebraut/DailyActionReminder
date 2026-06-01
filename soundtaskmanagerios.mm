@@ -10,8 +10,60 @@
 #include <QUrl>
 #include <QtGlobal>
 
+#import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
+
+static NSMutableArray<AVAudioPlayer *> *dailyActionsActivePlayers()
+{
+    static NSMutableArray<AVAudioPlayer *> *players = [[NSMutableArray alloc] init];
+    return players;
+}
+
+static void playNotificationSoundFromUserInfo(NSDictionary *userInfo)
+{
+    NSString *soundName = userInfo[@"soundName"];
+    NSNumber *volumeNumber = userInfo[@"volume"];
+    if (soundName.length == 0)
+        return;
+
+    NSURL *url = [[NSBundle mainBundle] URLForResource:[soundName stringByDeletingPathExtension]
+                                         withExtension:[soundName pathExtension]];
+    if (!url)
+        return;
+
+    NSError *error = nil;
+    AVAudioPlayer *player = [[AVAudioPlayer alloc] initWithContentsOfURL:url error:&error];
+    if (!player || error)
+        return;
+
+    player.volume = volumeNumber ? qBound(0.0f, volumeNumber.floatValue, 1.0f) : 1.0f;
+    [dailyActionsActivePlayers() addObject:player];
+    [player play];
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30LL * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        [dailyActionsActivePlayers() removeObject:player];
+    });
+}
+
+@interface DailyActionsNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+
+@implementation DailyActionsNotificationDelegate
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       willPresentNotification:(UNNotification *)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler
+{
+    Q_UNUSED(center);
+
+    playNotificationSoundFromUserInfo(notification.request.content.userInfo);
+
+    completionHandler(UNNotificationPresentationOptionBanner |
+                      UNNotificationPresentationOptionList);
+}
+
+@end
 
 namespace {
 
@@ -32,6 +84,35 @@ NSString *toNSString(const QString &value)
 QString fromNSString(NSString *value)
 {
     return value ? QString::fromUtf8([value UTF8String]) : QString();
+}
+
+void postLog(SoundTaskManagerIos *self, const QString &line);
+
+DailyActionsNotificationDelegate *notificationDelegate()
+{
+    static DailyActionsNotificationDelegate *delegate = [[DailyActionsNotificationDelegate alloc] init];
+    return delegate;
+}
+
+void configureAudioSession(SoundTaskManagerIos *self)
+{
+    NSError *error = nil;
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+
+    if (![session setCategory:AVAudioSessionCategoryPlayback error:&error]) {
+        postLog(self, QStringLiteral("[iOS] audio session category failed: %1")
+                          .arg(fromNSString(error.localizedDescription)));
+        return;
+    }
+
+    error = nil;
+    if (![session setActive:YES error:&error]) {
+        postLog(self, QStringLiteral("[iOS] audio session activate failed: %1")
+                          .arg(fromNSString(error.localizedDescription)));
+        return;
+    }
+
+    postLog(self, QStringLiteral("[iOS] audio session ready"));
 }
 
 void postLog(SoundTaskManagerIos *self, const QString &line)
@@ -164,12 +245,18 @@ qint64 computeNextIntervalFireMs(qint64 nowMs,
 
 UNMutableNotificationContent *makeContent(const QString &title,
                                           const QString &text,
-                                          const QString &soundName)
+                                          const QString &soundName,
+                                          float volume01)
 {
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
     content.title = toNSString(title.isEmpty() ? QStringLiteral("DailyActions") : title);
     content.body = toNSString(text);
     content.sound = notificationSound(soundName);
+    const QString normalized = normalizeSoundName(soundName);
+    content.userInfo = @{
+        @"soundName": toNSString(normalized),
+        @"volume": @(qBound(0.0f, volume01, 1.0f))
+    };
     return content;
 }
 
@@ -323,18 +410,26 @@ int SoundTaskManagerIos::nextId()
 void SoundTaskManagerIos::ensure()
 {
     auto *self = this;
-    UNAuthorizationOptions options = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
-    [[UNUserNotificationCenter currentNotificationCenter] requestAuthorizationWithOptions:options
-                                                                        completionHandler:^(BOOL granted, NSError *error) {
-        if (error) {
-            postLog(self, QStringLiteral("[iOS] notification permission error: %1")
-                              .arg(fromNSString(error.localizedDescription)));
-            return;
-        }
 
-        postLog(self, granted ? QStringLiteral("[iOS] notification permission granted")
-                              : QStringLiteral("[iOS] notification permission denied"));
-    }];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        configureAudioSession(self);
+
+        UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+        center.delegate = notificationDelegate();
+
+        UNAuthorizationOptions options = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
+        [center requestAuthorizationWithOptions:options
+                              completionHandler:^(BOOL granted, NSError *error) {
+            if (error) {
+                postLog(self, QStringLiteral("[iOS] notification permission error: %1")
+                                  .arg(fromNSString(error.localizedDescription)));
+                return;
+            }
+
+            postLog(self, granted ? QStringLiteral("[iOS] notification permission granted")
+                                  : QStringLiteral("[iOS] notification permission denied"));
+        }];
+    });
 }
 
 int SoundTaskManagerIos::startFixedSoundTask(const QString &rawSound,
@@ -343,7 +438,6 @@ int SoundTaskManagerIos::startFixedSoundTask(const QString &rawSound,
                                              float volume01,
                                              int soundDurationSec)
 {
-    Q_UNUSED(volume01);
     Q_UNUSED(soundDurationSec);
 
     const int id = nextId();
@@ -358,7 +452,7 @@ int SoundTaskManagerIos::startFixedSoundTask(const QString &rawSound,
                                        QString(),
                                        QString(),
                                        0,
-                                       1.0f,
+                                       volume01,
                                        soundDurationSec);
 
     return ok ? id : -1;
@@ -372,7 +466,6 @@ int SoundTaskManagerIos::startIntervalSoundTask(const QString &rawSound,
                                                 float volume01,
                                                 int soundDurationSec)
 {
-    Q_UNUSED(volume01);
     Q_UNUSED(soundDurationSec);
 
     if (intervalSecs <= 0)
@@ -396,7 +489,7 @@ int SoundTaskManagerIos::startIntervalSoundTask(const QString &rawSound,
                                        startTime,
                                        endTime,
                                        intervalSecs,
-                                       1.0f,
+                                       volume01,
                                        soundDurationSec);
 
     return ok ? id : -1;
@@ -415,7 +508,6 @@ bool SoundTaskManagerIos::scheduleWithParams(qint64 triggerAtMillis,
                                              float volume01,
                                              int durationSound)
 {
-    Q_UNUSED(volume01);
     Q_UNUSED(durationSound);
 
     if (requestId <= 0)
@@ -426,7 +518,7 @@ bool SoundTaskManagerIos::scheduleWithParams(qint64 triggerAtMillis,
     const QString normalizedMode = mode.compare(QStringLiteral("interval"), Qt::CaseInsensitive) == 0
                                        ? QStringLiteral("interval")
                                        : QStringLiteral("fixedTime");
-    UNMutableNotificationContent *content = makeContent(title, text, soundName);
+    UNMutableNotificationContent *content = makeContent(title, text, soundName, volume01);
     QString errorText;
     bool ok = true;
     qint64 firstAt = triggerAtMillis;

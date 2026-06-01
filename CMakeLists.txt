@@ -95,7 +95,25 @@ if(IOS)
     )
 
     target_link_libraries(appDailyActionReminder PRIVATE
+        "-framework AVFoundation"
         "-framework UserNotifications"
+    )
+
+    set(QT_IOS_FFMPEG_DIR "${Qt6_DIR}/../../ffmpeg")
+    get_filename_component(QT_IOS_FFMPEG_DIR "${QT_IOS_FFMPEG_DIR}" ABSOLUTE)
+
+    foreach(ffmpeg_lib avformat avcodec avutil swresample swscale)
+        target_link_libraries(appDailyActionReminder PRIVATE
+            "-framework lib${ffmpeg_lib}"
+        )
+    endforeach()
+
+    set_target_properties(appDailyActionReminder PROPERTIES
+        XCODE_ATTRIBUTE_FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*] "$(inherited) ${QT_IOS_FFMPEG_DIR}/libavformat.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libavcodec.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libavutil.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libswresample.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libswscale.xcframework/ios-arm64"
+        XCODE_ATTRIBUTE_FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*] "$(inherited) ${QT_IOS_FFMPEG_DIR}/libavformat.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libavcodec.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libavutil.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libswresample.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libswscale.xcframework/ios-x86_64-simulator"
+        XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "$(inherited) @executable_path/Frameworks @loader_path/Frameworks"
+        XCODE_EMBED_FRAMEWORKS "${QT_IOS_FFMPEG_DIR}/libavformat.xcframework/ios-arm64/libavformat.framework;${QT_IOS_FFMPEG_DIR}/libavcodec.xcframework/ios-arm64/libavcodec.framework;${QT_IOS_FFMPEG_DIR}/libavutil.xcframework/ios-arm64/libavutil.framework;${QT_IOS_FFMPEG_DIR}/libswresample.xcframework/ios-arm64/libswresample.framework;${QT_IOS_FFMPEG_DIR}/libswscale.xcframework/ios-arm64/libswscale.framework"
+        XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY TRUE
     )
 endif()
 
