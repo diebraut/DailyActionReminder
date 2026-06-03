@@ -262,6 +262,7 @@ Dialog {
             "Test: " + rawSound,
             startD.getTime(),
             endD.getTime(),
+            startD.getTime(),
             sec,
             vol,
             0

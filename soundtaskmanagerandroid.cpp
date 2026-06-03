@@ -2,6 +2,8 @@
 
 #include <QTimer>
 #include <QMutexLocker>
+#include <QDateTime>
+#include <QTime>
 #include <limits>
 #include <QtGlobal>
 #include <algorithm>
@@ -12,6 +14,102 @@
 #include <cstdarg>
 
 #include <QSettings>
+
+static int parseHHMMToMinutes(const QString &time)
+{
+    const QString s = time.trimmed();
+    const auto parts = s.split(u':');
+    if (parts.size() < 2)
+        return -1;
+
+    bool okH = false;
+    bool okM = false;
+    const int h = parts[0].toInt(&okH);
+    const int m = parts[1].toInt(&okM);
+    if (okH && okM && h == 24 && m == 0)
+        return 24 * 60;
+    if (!okH || !okM || h < 0 || h > 23 || m < 0 || m > 59)
+        return -1;
+    return h * 60 + m;
+}
+
+static qint64 dateAtMinutes(qint64 nowMs, int minutes)
+{
+    QDateTime dt = QDateTime::fromMSecsSinceEpoch(nowMs).toLocalTime();
+    dt.setTime(QTime(0, 0));
+    return dt.addSecs(qint64(qMax(0, minutes)) * 60).toMSecsSinceEpoch();
+}
+
+static qint64 computeNextIntervalFireMs(qint64 nowMs,
+                                        const QString &startTime,
+                                        const QString &endTime,
+                                        const QString &startAnchorTime,
+                                        qint64 startAnchorMs,
+                                        int intervalSeconds)
+{
+    if (intervalSeconds <= 0)
+        return 0;
+
+    const QDateTime now = QDateTime::fromMSecsSinceEpoch(nowMs).toLocalTime();
+    const int currentMin = now.time().hour() * 60 + now.time().minute();
+    const int startMinRaw = parseHHMMToMinutes(startTime);
+    const int endMinRaw = parseHHMMToMinutes(endTime);
+    const int anchorMinRaw = parseHHMMToMinutes(startAnchorTime);
+    const int startMin = startMinRaw >= 0 ? startMinRaw : 0;
+    const int endMin = endMinRaw >= 0 ? endMinRaw : 24 * 60;
+    const int anchorMin = anchorMinRaw >= 0
+                              ? anchorMinRaw
+                              : now.time().hour() * 60 + now.time().minute();
+
+    qint64 start = dateAtMinutes(nowMs, startMin);
+    qint64 end = dateAtMinutes(nowMs, endMin);
+    qint64 anchor = startAnchorMs > 0 ? startAnchorMs : dateAtMinutes(nowMs, anchorMin);
+    const qint64 dayMs = 24LL * 60LL * 60LL * 1000LL;
+
+    if (endMin == startMin) {
+        end += dayMs;
+    } else if (endMin < startMin) {
+        if (currentMin < endMin) {
+            start -= dayMs;
+            if (anchorMin >= startMin)
+                anchor -= dayMs;
+        } else {
+            end += dayMs;
+        }
+    }
+
+    if (nowMs >= end) {
+        start += dayMs;
+        end += dayMs;
+    }
+
+    const qint64 intervalMs = qMax<qint64>(1000, qint64(intervalSeconds) * 1000);
+
+    if (anchor > nowMs && anchor >= start && anchor < end) {
+        const qint64 firstAfterStart = anchor + intervalMs;
+        if (firstAfterStart < end)
+            return firstAfterStart;
+    }
+
+    const qint64 searchFrom = qMax(nowMs, start);
+    qint64 k = (searchFrom - anchor + intervalMs - 1) / intervalMs;
+    if (k < 0)
+        k = 0;
+    qint64 next = anchor + k * intervalMs;
+
+    if (next < start) {
+        k = (start - anchor + intervalMs - 1) / intervalMs;
+        next = anchor + k * intervalMs;
+    }
+
+    if (next >= end) {
+        start += dayMs;
+        k = (start - anchor + intervalMs - 1) / intervalMs;
+        next = anchor + k * intervalMs;
+    }
+
+    return qMax(next, nowMs + 1);
+}
 
 static QJniObject getQtActivity()
 {
@@ -144,6 +242,7 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
                                                  const QString &fixedTime,
                                                  const QString &startTime,
                                                  const QString &endTime,
+                                                 const QString &startAnchorTime,
                                                  int intervalSeconds,
                                                  float volume01,
                                                  int durationSound)
@@ -158,7 +257,7 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
 
     const char *sig =
         "(Landroid/content/Context;JLjava/lang/String;ILjava/lang/String;Ljava/lang/String;"
-        "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IFI)V";
+        "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IFI)V";
 
 
     QJniObject jSound = QJniObject::fromString(soundName);
@@ -168,9 +267,10 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
     QJniObject jFixed = QJniObject::fromString(fixedTime);
     QJniObject jStart = QJniObject::fromString(startTime);
     QJniObject jEnd   = QJniObject::fromString(endTime);
+    QJniObject jStartAnchor = QJniObject::fromString(startAnchorTime);
 
     alogW("istScheduled() start id=%d",requestId);
-    alogW("SoundTaskManager.scheduleWithParams id=%d at=%lld inMs=%lld mode=%s sound=%s vol=%.2f fixed=%s start=%s end=%s intervalSec=%d durationSound=%d",
+    alogW("SoundTaskManager.scheduleWithParams id=%d at=%lld inMs=%lld mode=%s sound=%s vol=%.2f fixed=%s start=%s end=%s anchor=%s intervalSec=%d durationSound=%d",
           requestId,
           (long long)triggerAtMillis,
           (long long)(triggerAtMillis - QDateTime::currentMSecsSinceEpoch()),
@@ -180,6 +280,7 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
           fixedTime.toUtf8().constData(),
           startTime.toUtf8().constData(),
           endTime.toUtf8().constData(),
+          startAnchorTime.toUtf8().constData(),
           intervalSeconds,
           durationSound);
 
@@ -197,6 +298,7 @@ bool SoundTaskManagerAndroid::scheduleWithParams(qint64 triggerAtMillis,
         jFixed.object<jstring>(),
         jStart.object<jstring>(),
         jEnd.object<jstring>(),
+        jStartAnchor.object<jstring>(),
         (jint)intervalSeconds,
         (jfloat)v,
         (jint) durationSound
@@ -307,6 +409,7 @@ int SoundTaskManagerAndroid::startFixedSoundTask(const QString &rawSound,
         fixedStr,
         "",
         "",
+        "",
         0,
         volume01,
         durationSound
@@ -323,18 +426,17 @@ int SoundTaskManagerAndroid::startIntervalSoundTask(const QString &rawSound,
                                                     const QString &notificationTxt,
                                                     qint64 startTimeMs,
                                                     qint64 endTimeMs,
+                                                    qint64 startAnchorTimeMs,
                                                     int intervalSecs,
                                                     float volume01,
                                                     int durationSound)
 {
     if (intervalSecs <= 0) return -1;
 
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const qint64 intervalMs = (qint64)intervalSecs * 1000;
-
     // --- Hilfswerte fürs Zeitfenster (nur Zeitanteil zählt) ---
     const bool hasStart = (startTimeMs > 0);
     const bool hasEnd   = (endTimeMs > 0);
+    const bool hasAnchor = (startAnchorTimeMs > 0);
 
     // Zeitstrings (HH:mm) bleiben gleich – Java nutzt die täglich
     const QString startStr = hasStart
@@ -343,70 +445,16 @@ int SoundTaskManagerAndroid::startIntervalSoundTask(const QString &rawSound,
     const QString endStr = hasEnd
                                ? QDateTime::fromMSecsSinceEpoch(endTimeMs).time().toString("HH:mm")
                                : QString();
+    const QString startAnchorStr = hasAnchor
+                                       ? QDateTime::fromMSecsSinceEpoch(startAnchorTimeMs).time().toString("HH:mm")
+                                       : QDateTime::currentDateTime().time().toString("HH:mm");
 
-    // heute: start/end als Ms (wenn vorhanden)
-    qint64 winStart = startTimeMs;
-    qint64 winEnd   = endTimeMs;
-
-    // Fenster kann über Mitternacht gehen (end <= start) => end + 24h
-    if (hasStart && hasEnd && winEnd <= winStart) {
-        winEnd += 24LL * 60LL * 60LL * 1000LL;
-    }
-
-    // --- 1) erster Termin: erst nach Intervall ---
-    qint64 firstAt = now + intervalMs;
-
-    // --- 2) auf Zeitfenster abbilden (heute/ggf. morgen) ---
-    if (hasStart || hasEnd) {
-        // Wenn wir ein über-Mitternacht-Fenster haben und now liegt nach Mitternacht (z.B. 01:00),
-        // dann muss winStart ggf. "gestern" sein. Einfacher: wir betrachten zwei Fenster:
-        // [winStart, winEnd] (heute) und [winStart+24h, winEnd+24h] (morgen)
-        // und suchen den ersten firstAt, der in einem Fenster liegt bzw. auf start geschoben werden kann.
-
-        auto inWindow = [](qint64 t, qint64 s, qint64 e, bool hasS, bool hasE) -> bool {
-            if (hasS && hasE) return (t >= s && t < e);
-            if (hasS)         return (t >= s);
-            if (hasE)         return (t < e);
-            return true;
-        };
-
-        auto adjustToWindow = [&](qint64 t, qint64 s, qint64 e, bool hasS, bool hasE) -> qint64 {
-            // Wenn vor Start => auf Start schieben
-            if (hasS && t < s) return s;
-            // Wenn nach/gleich End => "nicht ok", Caller entscheidet (morgen)
-            return t;
-        };
-
-        // Fenster heute
-        qint64 s0 = winStart;
-        qint64 e0 = winEnd;
-
-        // Wenn winStart/winEnd als "heute" gegeben sind, aber now ist bereits weit danach,
-        // kann firstAt außerhalb liegen. Dann prüfen wir heute, sonst morgen.
-        if (hasStart && hasEnd) {
-            if (!inWindow(firstAt, s0, e0, true, true)) {
-                firstAt = adjustToWindow(firstAt, s0, e0, true, true);
-                if (firstAt >= e0) {
-                    // auf morgen verschieben
-                    const qint64 s1 = s0 + 24LL * 60LL * 60LL * 1000LL;
-                    const qint64 e1 = e0 + 24LL * 60LL * 60LL * 1000LL;
-                    firstAt = s1; // frühester Zeitpunkt im nächsten Fenster
-                    // (firstAt ist dann automatisch >= now+interval? nicht zwingend, aber das ist ok,
-                    //  weil wir "erst nach Intervall" bereits erfüllt haben: s1 liegt in der Zukunft)
-                    Q_UNUSED(e1);
-                }
-            }
-        } else if (hasStart && !hasEnd) {
-            // nur Start: frühestens Start, aber erst nach Intervall
-            if (firstAt < s0) firstAt = s0;
-        } else if (!hasStart && hasEnd) {
-            // nur End: bis End, falls firstAt >= end => morgen ist nicht definierbar -> abbrechen
-            if (firstAt >= e0) return -1;
-        }
-    }
-
-    // Sicherheitscheck: firstAt muss in der Zukunft liegen
-    if (firstAt < now + 1) firstAt = now + 1;
+    const qint64 firstAt = computeNextIntervalFireMs(QDateTime::currentMSecsSinceEpoch(),
+                                                     startStr,
+                                                     endStr,
+                                                     startAnchorStr,
+                                                     startAnchorTimeMs,
+                                                     intervalSecs);
 
     // --- ID holen & schedulen ---
     const int id = allocId();
@@ -422,6 +470,7 @@ int SoundTaskManagerAndroid::startIntervalSoundTask(const QString &rawSound,
         "00:00",
         startStr,
         endStr,
+        startAnchorStr,
         intervalSecs,
         volume01,
         durationSound
@@ -470,4 +519,3 @@ bool SoundTaskManagerAndroid::isScheduled(int requestId) const
     emit logLine(QString("isScheduled(%1): %2").arg(requestId).arg(scheduled ? "true" : "false"));
     return scheduled;
 }
-

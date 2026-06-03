@@ -23,6 +23,7 @@ public:
                                const QString &notificationTxt,
                                qint64 startTimeMs,
                                qint64 endTimeMs,
+                               qint64 startAnchorTimeMs,
                                int intervalSecs,
                                float volume01,
                                int soundDurationSec) override;
@@ -38,6 +39,7 @@ public:
                             const QString &fixedTime,
                             const QString &startTime,
                             const QString &endTime,
+                            const QString &startAnchorTime,
                             int intervalSeconds,
                             float volume01,
                             int durationSound) override;

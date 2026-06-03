@@ -67,6 +67,8 @@ struct TaskState {
     QString fixedTime;        // "HH:MM"
     QString startTime;        // "HH:MM"
     QString endTime;          // "HH:MM"
+    QString startAnchorTime;  // "HH:MM" phase anchor for interval mode
+    qint64 startAnchorMs = 0; // exact phase anchor for running timers
     int intervalSeconds = 0;  // for interval mode
     float volume01 = 1.0f;
 
@@ -94,8 +96,11 @@ static int parseHHMMToMinutes(const QString &t)
     if (!okH) h = 0;
     if (!okM) m = 0;
 
-    h = qBound(0, h, 23);
     m = qBound(0, m, 59);
+    if (h == 24 && m == 0)
+        return 24 * 60;
+
+    h = qBound(0, h, 23);
     return h * 60 + m;
 }
 
@@ -113,40 +118,67 @@ static QDateTime dateAtMinutes(const QDateTime &baseLocal, int minutes)
 static qint64 computeNextIntervalFireMs(qint64 nowMillis,
                                         const QString &startTime,
                                         const QString &endTime,
+                                        const QString &startAnchorTime,
+                                        qint64 startAnchorMs,
                                         int intervalSeconds)
 {
     if (intervalSeconds <= 0) return 0;
 
     const QDateTime now = QDateTime::fromMSecsSinceEpoch(nowMillis).toLocalTime();
+    const int currentMin = now.time().hour() * 60 + now.time().minute();
 
-    const int startMin = parseHHMMToMinutes(startTime);
-    const int endMin   = parseHHMMToMinutes(endTime);
+    const int startMin = startTime.trimmed().isEmpty() ? 0 : parseHHMMToMinutes(startTime);
+    const int endMin   = endTime.trimmed().isEmpty() ? 24 * 60 : parseHHMMToMinutes(endTime);
+    const int anchorMin = startAnchorTime.trimmed().isEmpty()
+                              ? now.time().hour() * 60 + now.time().minute()
+                              : parseHHMMToMinutes(startAnchorTime);
 
     QDateTime start = dateAtMinutes(now, startMin);
     QDateTime end   = dateAtMinutes(now, endMin);
+    QDateTime anchor = startAnchorMs > 0
+            ? QDateTime::fromMSecsSinceEpoch(startAnchorMs).toLocalTime()
+            : dateAtMinutes(now, anchorMin);
 
     // window spans midnight (or same -> treat as span)
-    if (endMin == startMin || endMin < startMin)
+    if (endMin == startMin) {
         end = end.addDays(1);
-
-    // before window -> first fire at window start
-    if (now < start)
-        return start.toMSecsSinceEpoch();
-
-    // after window -> next day start
-    if (now >= end) {
-        start = start.addDays(1);
-        return start.toMSecsSinceEpoch();
+    } else if (endMin < startMin) {
+        if (currentMin < endMin) {
+            start = start.addDays(-1);
+            if (anchorMin >= startMin)
+                anchor = anchor.addDays(-1);
+        } else {
+            end = end.addDays(1);
+        }
     }
 
-    // inside window -> fire "interval" seconds from NOW (no rounding)
-    const qint64 intervalMs = qMax<qint64>(1000, qint64(intervalSeconds) * 1000);
-    qint64 next = now.toMSecsSinceEpoch() + intervalMs;
+    if (now >= end) {
+        start = start.addDays(1);
+        end = end.addDays(1);
+    }
 
-    // if that would leave the window -> next day start
+    const qint64 intervalMs = qMax<qint64>(1000, qint64(intervalSeconds) * 1000);
+
+    if (anchor > now && anchor >= start && anchor < end) {
+        const qint64 firstAfterStart = anchor.toMSecsSinceEpoch() + intervalMs;
+        if (firstAfterStart < end.toMSecsSinceEpoch())
+            return firstAfterStart;
+    }
+
+    const qint64 searchFrom = qMax(now.toMSecsSinceEpoch(), start.toMSecsSinceEpoch());
+    qint64 k = (searchFrom - anchor.toMSecsSinceEpoch() + intervalMs - 1) / intervalMs;
+    if (k < 0) k = 0;
+    qint64 next = anchor.toMSecsSinceEpoch() + k * intervalMs;
+
+    if (next < start.toMSecsSinceEpoch()) {
+        k = (start.toMSecsSinceEpoch() - anchor.toMSecsSinceEpoch() + intervalMs - 1) / intervalMs;
+        next = anchor.toMSecsSinceEpoch() + k * intervalMs;
+    }
+
     if (next >= end.toMSecsSinceEpoch()) {
         start = start.addDays(1);
-        next = start.toMSecsSinceEpoch();
+        k = (start.toMSecsSinceEpoch() - anchor.toMSecsSinceEpoch() + intervalMs - 1) / intervalMs;
+        next = anchor.toMSecsSinceEpoch() + k * intervalMs;
     }
 
     return next;
@@ -334,7 +366,7 @@ static void scheduleOneShot(SoundTaskManagerDesktop *self, TaskState &st, int re
             const qint64 next = computeNextFixedFireMs(nowMs(), st.fixedTime);
             scheduleOneShot(self, st, requestId, next);
         } else { // "interval"
-            const qint64 next = computeNextIntervalFireMs(nowMs(), st.startTime, st.endTime, st.intervalSeconds);
+            const qint64 next = computeNextIntervalFireMs(nowMs(), st.startTime, st.endTime, st.startAnchorTime, st.startAnchorMs, st.intervalSeconds);
             scheduleOneShot(self, st, requestId, next);
         }
     });
@@ -382,6 +414,7 @@ int SoundTaskManagerDesktop::startIntervalSoundTask(const QString &rawSound,
                                                     const QString &notificationTxt,
                                                     qint64 startTimeMs,
                                                     qint64 endTimeMs,
+                                                    qint64 startAnchorTimeMs,
                                                     int intervalSecs,
                                                     float volume01,
                                                     int soundDurationSec)
@@ -399,12 +432,15 @@ int SoundTaskManagerDesktop::startIntervalSoundTask(const QString &rawSound,
 
     const QDateTime stDt = QDateTime::fromMSecsSinceEpoch(startTimeMs).toLocalTime();
     const QDateTime enDt = QDateTime::fromMSecsSinceEpoch(endTimeMs).toLocalTime();
+    const QDateTime anchorDt = QDateTime::fromMSecsSinceEpoch(startAnchorTimeMs > 0 ? startAnchorTimeMs : nowMs()).toLocalTime();
     st->startTime = stDt.time().toString("HH:mm");
     st->endTime   = enDt.time().toString("HH:mm");
+    st->startAnchorTime = anchorDt.time().toString("HH:mm");
+    st->startAnchorMs = startAnchorTimeMs > 0 ? startAnchorTimeMs : nowMs();
     st->intervalSeconds = intervalSecs;
 
     // Next trigger is computed against start/end strings + interval
-    const qint64 next = computeNextIntervalFireMs(nowMs(), st->startTime, st->endTime, intervalSecs);
+    const qint64 next = computeNextIntervalFireMs(nowMs(), st->startTime, st->endTime, st->startAnchorTime, st->startAnchorMs, intervalSecs);
     scheduleOneShot(this, *st, id, next);
 
     // Repeating timer: once in-window, fires every intervalSecs; outside window it idles until next window
@@ -422,7 +458,7 @@ int SoundTaskManagerDesktop::startIntervalSoundTask(const QString &rawSound,
         TaskState &st = it.value();
 
         const qint64 n = nowMs();
-        const qint64 next = computeNextIntervalFireMs(n, st.startTime, st.endTime, st.intervalSeconds);
+        const qint64 next = computeNextIntervalFireMs(n, st.startTime, st.endTime, st.startAnchorTime, st.startAnchorMs, st.intervalSeconds);
         // We only play if we are "on or after" the computed next tick.
         if (next <= n + 50) // small tolerance
             playOnce(this, st, id);
@@ -432,9 +468,10 @@ int SoundTaskManagerDesktop::startIntervalSoundTask(const QString &rawSound,
 
     rep->start();
 
-    emit logLine(QString("[Desktop] startIntervalSoundTask id=%1 start=%2 end=%3 every=%4s sound=%5 text=%6")
+    emit logLine(QString("[Desktop] startIntervalSoundTask id=%1 start=%2 end=%3 anchor=%4 every=%5s sound=%6 text=%7")
                      .arg(id)
                      .arg(st->startTime, st->endTime)
+                     .arg(st->startAnchorTime)
                      .arg(intervalSecs)
                      .arg(rawSound, notificationTxt));
 
@@ -457,6 +494,7 @@ bool SoundTaskManagerDesktop::scheduleWithParams(qint64 triggerAtMillis,
                                                  const QString &fixedTime,
                                                  const QString &startTime,
                                                  const QString &endTime,
+                                                 const QString &startAnchorTime,
                                                  int intervalSeconds,
                                                  float volume01,
                                                  int durationSound)
@@ -472,13 +510,13 @@ bool SoundTaskManagerDesktop::scheduleWithParams(qint64 triggerAtMillis,
     st->fixedTime = fixedTime;
     st->startTime = startTime;
     st->endTime = endTime;
+    st->startAnchorTime = startAnchorTime;
+    st->startAnchorMs = (st->mode == "interval" && triggerAtMillis > 0) ? triggerAtMillis : 0;
     st->intervalSeconds = qMax(1, intervalSeconds); // scheduleWithParams expects seconds
     st->volume01 = volume01;
 
     if (st->mode == "interval") {
-        //const qint64 next = computeNextIntervalFireMs(nowMs(), startTime, endTime, qMax(1, intervalSeconds));
         scheduleOneShot(this, *st, requestId, triggerAtMillis);
-        Q_INVOKABLE bool cancel(int requestId);
 
         // repeating timer for in-window ticks
         QTimer *rep = new QTimer(this);
@@ -494,7 +532,7 @@ bool SoundTaskManagerDesktop::scheduleWithParams(qint64 triggerAtMillis,
 
             TaskState &st = it.value();
             const qint64 n = nowMs();
-            const qint64 next = computeNextIntervalFireMs(n, st.startTime, st.endTime, qMax(1, st.intervalSeconds));
+            const qint64 next = computeNextIntervalFireMs(n, st.startTime, st.endTime, st.startAnchorTime, st.startAnchorMs, qMax(1, st.intervalSeconds));
             if (next <= n + 50)
                 playOnce(this, st, requestId);
             else
@@ -503,8 +541,8 @@ bool SoundTaskManagerDesktop::scheduleWithParams(qint64 triggerAtMillis,
 
         rep->start();
 
-        emit logLine(QString("[Desktop] scheduleWithParams interval id=%1 start=%2 end=%3 every=%4s sound=%5")
-                         .arg(requestId).arg(startTime, endTime).arg(intervalSeconds).arg(soundName));
+        emit logLine(QString("[Desktop] scheduleWithParams interval id=%1 start=%2 end=%3 anchor=%4 every=%5s sound=%6")
+                         .arg(requestId).arg(startTime, endTime).arg(startAnchorTime).arg(intervalSeconds).arg(soundName));
 
         return true;
     }
@@ -556,4 +594,3 @@ qint64 SoundTaskManagerDesktop::getNextAtMs(int alarmId) const
 
     return it.value().nextAtMs;
 }
-

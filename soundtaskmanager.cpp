@@ -27,11 +27,12 @@ int SoundTaskManager::startIntervalSoundTask(const QString &rawSound,
                                              const QString &notificationTxt,
                                              qint64 startTimeMs,
                                              qint64 endTimeMs,
+                                             qint64 startAnchorTimeMs,
                                              int intervalSecs,
                                              float volume01,
                                              int soundDurationSec)
 {
-    return m_impl->startIntervalSoundTask(rawSound, notificationTxt, startTimeMs, endTimeMs, intervalSecs, volume01, soundDurationSec);
+    return m_impl->startIntervalSoundTask(rawSound, notificationTxt, startTimeMs, endTimeMs, startAnchorTimeMs, intervalSecs, volume01, soundDurationSec);
 }
 
 void SoundTaskManager::cancelAlarmTask(int alarmId)
@@ -48,12 +49,13 @@ bool SoundTaskManager::scheduleWithParams(qint64 triggerAtMillis,
                                           const QString &fixedTime,
                                           const QString &startTime,
                                           const QString &endTime,
+                                          const QString &startAnchorTime,
                                           int intervalSeconds,
                                           float volume01,
                                           int durationSound)
 {
     return m_impl->scheduleWithParams(triggerAtMillis, soundName, requestId, title, text, mode,
-                                      fixedTime, startTime, endTime, intervalSeconds, volume01,durationSound);
+                                      fixedTime, startTime, endTime, startAnchorTime, intervalSeconds, volume01,durationSound);
 }
 
 bool SoundTaskManager::cancel(int requestId)
@@ -84,4 +86,3 @@ qint64 SoundTaskManager::getNextAtMs(int alarmId)
 {
     return m_impl->getNextAtMs(alarmId);
 }
-

@@ -22,6 +22,7 @@ Rectangle {
     property string fixedTime
     property string startTime
     property string endTime
+    property string startAnchorTime: Qt.formatTime(new Date(), "HH:mm")
     property int intervalMinutes
     property int durationSound
 
@@ -35,12 +36,15 @@ Rectangle {
 
     // keep last valid non-empty name
     property string _lastNonEmptyActionText: ""
+    property string validationMessage: ""
 
     // Anzeige-Name: wenn leer -> Bell
     readonly property string soundDisplayName: (root.sound && root.sound.trim().length > 0) ? root.sound.trim() : "Bell"
 
     property int nextInMinutes: -1   // wird von Main gesetzt
     property int nextInSeconds: -1   // <60s -> mm:ss Anzeige
+    property bool intervalPaused: false
+    property int intervalStartsInSeconds: -1
 
     property real volume: 1.0   // 0.0 .. 1.0 (pro Aktion)
 
@@ -58,6 +62,7 @@ Rectangle {
     signal fixedTimeEdited(string v)
     signal startTimeEdited(string v)
     signal endTimeEdited(string v)
+    signal startAnchorTimeEdited(string v)
     signal intervalMinutesEdited(int v)
     signal soundEdited(string v)
     signal soundEnabledEdited(bool v)
@@ -81,10 +86,14 @@ Rectangle {
             return ""
         }
 
-        // INTERVALL: mm:ss in letzter Minute, sonst "X Min"
+        // INTERVALL: immer mit Sekunden
         if (root.nextInSeconds >= 0) {
-            const mm = Math.floor(root.nextInSeconds / 60)
-            const ss = root.nextInSeconds % 60
+            const total = root.nextInSeconds
+            const hh = Math.floor(total / 3600)
+            const mm = Math.floor((total % 3600) / 60)
+            const ss = total % 60
+            if (hh > 0)
+                return " (in " + _pad2(hh) + ":" + _pad2(mm) + ":" + _pad2(ss) + ")"
             return " (in " + _pad2(mm) + ":" + _pad2(ss) + ")"
         }
         if (root.nextInMinutes >= 0)
@@ -93,11 +102,27 @@ Rectangle {
     }
 
     function nextCountdownLine() {
-        // INTERVALL: nextInSeconds = Sekunden gesamt (z.B. 60..0), sonst nextInMinutes
+        // INTERVALL: nextInSeconds = Sekunden gesamt
         if (root.mode === "interval") {
+            if (root.intervalPaused && root.intervalStartsInSeconds >= 0) {
+                const totalStart = root.intervalStartsInSeconds
+                const hStart = Math.floor(totalStart / 3600)
+                const mStart = Math.floor((totalStart % 3600) / 60)
+                const sStart = totalStart % 60
+                const timeText = hStart > 0
+                        ? (_pad2(hStart) + ":" + _pad2(mStart) + ":" + _pad2(sStart))
+                        : (_pad2(mStart) + ":" + _pad2(sStart))
+                return "Intervall startet in " + timeText
+            }
+
             if (root.nextInSeconds >= 0) {
-                // < 1 Minute: nur Sekunden
-                return root.nextInSeconds + " Sekunden"
+                const total = root.nextInSeconds
+                const h = Math.floor(total / 3600)
+                const m = Math.floor((total % 3600) / 60)
+                const s = total % 60
+                if (h > 0)
+                    return _pad2(h) + ":" + _pad2(m) + ":" + _pad2(s) + " Stunden"
+                return _pad2(m) + ":" + _pad2(s) + " Minuten"
             }
             if (root.nextInMinutes >= 0) {
                 // ab 60 Minuten: hh:mm Stunden
@@ -158,6 +183,87 @@ Rectangle {
             root[propName] = newValue
             sig(newValue)
         }
+    }
+
+    function _intervalTimeToMinutes(value, defaultMinutes) {
+        if (typeof value !== "string")
+            return defaultMinutes
+
+        const s = value.trim()
+        if (s.length === 0)
+            return defaultMinutes
+
+        const parts = s.split(":")
+        if (parts.length < 2)
+            return -1
+
+        const h = parseInt(parts[0], 10)
+        const m = parseInt(parts[1], 10)
+        if (isNaN(h) || isNaN(m) || m < 0 || m > 59)
+            return -1
+
+        if (h === 24 && m === 0)
+            return 24 * 60
+
+        if (h < 0 || h > 23)
+            return -1
+
+        return h * 60 + m
+    }
+
+    function _isValidIntervalWindow(startValue, endValue) {
+        const startMin = _intervalTimeToMinutes(startValue, 0)
+        const endMin = _intervalTimeToMinutes(endValue, 24 * 60)
+        return startMin >= 0 && endMin >= 0 && (endMin - startMin) >= 1
+    }
+
+    function _trySetStartTime(v) {
+        const value = (v || "").trim()
+        if (!_isValidIntervalWindow(value, root.endTime)) {
+            root.showValidationMessage("Ungültiges Intervall")
+            return
+        }
+
+        root.startTime = value
+        root.startTimeEdited(value)
+    }
+
+    function _trySetEndTime(v) {
+        const value = (v || "").trim()
+        if (!_isValidIntervalWindow(root.startTime, value)) {
+            root.showValidationMessage("Ungültiges Intervall")
+            return
+        }
+
+        root.endTime = value
+        root.endTimeEdited(value)
+    }
+
+    function _trySetStartAnchorTime(v) {
+        const value = (v || "").trim()
+        const previewMin = _intervalTimeToMinutes(value, -1)
+        const startMin = _intervalTimeToMinutes(root.startTime, 0)
+        const endMin = _intervalTimeToMinutes(root.endTime, 24 * 60)
+
+        if (previewMin < startMin || previewMin >= endMin) {
+            root.showValidationMessage("Startzeit außerhalb Intervall")
+            return
+        }
+
+        root.startAnchorTime = value
+        root.startAnchorTimeEdited(value)
+    }
+
+    function showValidationMessage(message) {
+        validationMessage = message
+        validationMessageTimer.restart()
+    }
+
+    Timer {
+        id: validationMessageTimer
+        interval: 1800
+        repeat: false
+        onTriggered: root.validationMessage = ""
     }
 
     function ensureDefaults() {
@@ -468,10 +574,13 @@ Rectangle {
         property string label: ""
         property string value: ""
         property string placeholder: ""
+        property string displaySuffix: ""
         property var validator: null
         property int inputHints: Qt.ImhNone
         property int minInputWidth: 140
         property int preferredInputWidth: 180
+        property int labelInputSpacing: 5
+        property int labelWidth: 0
         signal valueEdited(string v)
 
         function commit() {
@@ -486,7 +595,7 @@ Rectangle {
         RowLayout {
             id: rowITF
             width: parent.width
-            spacing: 10
+            spacing: itf.labelInputSpacing
 
             Text {
                 text: itf.label + ":"
@@ -496,6 +605,7 @@ Rectangle {
                 wrapMode: Text.NoWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.fillWidth: false
+                Layout.preferredWidth: itf.labelWidth > 0 ? itf.labelWidth : implicitWidth
                 Layout.maximumWidth: parent.width - itf.minInputWidth - rowITF.spacing
             }
 
@@ -515,7 +625,7 @@ Rectangle {
                     anchors.rightMargin: doneITF.visible ? 42 : 10
                     verticalAlignment: TextInput.AlignVCenter
                     font.pixelSize: 14
-                    color: "#222222"
+                    color: displayITF.visible ? "transparent" : "#222222"
                     selectByMouse: true
                     inputMethodHints: itf.inputHints
                     validator: itf.validator
@@ -529,6 +639,24 @@ Rectangle {
 
                     onAccepted: itf.commit()
                     onEditingFinished: itf.valueEdited(text)
+                    onActiveFocusChanged: {
+                        if (!activeFocus)
+                            text = itf.value
+                    }
+                }
+
+                Text {
+                    id: displayITF
+                    visible: !inputITF.activeFocus && inputITF.text.length > 0 && itf.displaySuffix.length > 0
+                    anchors.left: parent.left
+                    anchors.leftMargin: 10
+                    anchors.right: parent.right
+                    anchors.rightMargin: doneITF.visible ? 42 : 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: inputITF.text + itf.displaySuffix
+                    color: "#222222"
+                    font.pixelSize: 14
+                    elide: Text.ElideRight
                 }
 
                 Rectangle {
@@ -578,11 +706,21 @@ Rectangle {
         property int maxValue: 999999999
         property int minInputWidth: 140
         property int preferredInputWidth: 180
+        property string displaySuffix: ""
+        property int labelInputSpacing: 5
+        property int labelWidth: 0
         signal valueEdited(int v)
 
         function commit() {
             const v = parseInt(inputINF.text)
-            if (!isNaN(v)) inf.valueEdited(Math.max(inf.minValue, Math.min(inf.maxValue, v)))
+            if (isNaN(v) || v < inf.minValue || v > inf.maxValue) {
+                inputINF.text = inf.value.toString()
+                inputINF.focus = false
+                Qt.inputMethod.hide()
+                return
+            }
+
+            inf.valueEdited(v)
             inputINF.focus = false
             Qt.inputMethod.hide()
         }
@@ -593,7 +731,7 @@ Rectangle {
         RowLayout {
             id: rowINF
             width: parent.width
-            spacing: 10
+            spacing: inf.labelInputSpacing
 
             Text {
                 text: inf.label + ":"
@@ -603,6 +741,7 @@ Rectangle {
                 wrapMode: Text.NoWrap
                 Layout.alignment: Qt.AlignVCenter
                 Layout.fillWidth: false
+                Layout.preferredWidth: inf.labelWidth > 0 ? inf.labelWidth : implicitWidth
                 Layout.maximumWidth: parent.width - inf.minInputWidth - rowINF.spacing
             }
 
@@ -622,7 +761,7 @@ Rectangle {
                     anchors.rightMargin: doneINF.visible ? 42 : 10
                     verticalAlignment: TextInput.AlignVCenter
                     font.pixelSize: 14
-                    color: "#222222"
+                    color: displayINF.visible ? "transparent" : "#222222"
                     selectByMouse: true
                     inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhPreferNumbers
                     validator: IntValidator { bottom: inf.minValue; top: inf.maxValue }
@@ -637,8 +776,27 @@ Rectangle {
                     onAccepted: inf.commit()
                     onEditingFinished: {
                         const v = parseInt(text)
-                        if (!isNaN(v)) inf.valueEdited(v)
+                        if (!isNaN(v) && v >= inf.minValue && v <= inf.maxValue)
+                            inf.valueEdited(v)
                     }
+                    onActiveFocusChanged: {
+                        if (!activeFocus)
+                            text = inf.value.toString()
+                    }
+                }
+
+                Text {
+                    id: displayINF
+                    visible: !inputINF.activeFocus && inputINF.text.length > 0 && inf.displaySuffix.length > 0
+                    anchors.left: parent.left
+                    anchors.leftMargin: 10
+                    anchors.right: parent.right
+                    anchors.rightMargin: doneINF.visible ? 42 : 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: inputINF.text + inf.displaySuffix
+                    color: "#222222"
+                    font.pixelSize: 14
+                    elide: Text.ElideRight
                 }
 
                 Rectangle {
@@ -671,7 +829,7 @@ Rectangle {
 
     RegularExpressionValidator {
         id: timeValidator
-        regularExpression: /^$|^(?:[01]\d|2[0-3]):[0-5]\d$/
+        regularExpression: /^$|^(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)$/
     }
 
     component SectionHeader: Item {
@@ -1055,45 +1213,84 @@ Rectangle {
                             spacing: 10
                             Layout.fillWidth: true
 
-                            InlineTextField {
-                                label: "Start (optional)"
-                                value: root.startTime
-                                placeholder: "leer = 00:00"
-                                validator: timeValidator
-                                inputHints: Qt.ImhTime
-                                minInputWidth: 170
-                                preferredInputWidth: 220
-                                onValueEdited: function(v) {
-                                    root.startTime = v
-                                    root.startTimeEdited(v)
-                                }
-                            }
-
-                            InlineTextField {
-                                label: "Ende (optional)"
-                                value: root.endTime
-                                placeholder: "leer = 00:00"
-                                validator: timeValidator
-                                inputHints: Qt.ImhTime
-                                minInputWidth: 170
-                                preferredInputWidth: 220
-                                onValueEdited: function(v) {
-                                    root.endTime = v
-                                    root.endTimeEdited(v)
-                                }
-                            }
-
                             InlineNumberField {
-                                label: "Intervall (Min.)"
+                                label: "Intervall"
                                 value: root.intervalMinutes
+                                displaySuffix: " Minuten"
                                 minValue: 1
                                 maxValue: 24 * 60
-                                minInputWidth: 170
-                                preferredInputWidth: 220
+                                labelWidth: 62
+                                minInputWidth: 88
+                                preferredInputWidth: 96
+                                Layout.preferredWidth: 164
+                                Layout.fillWidth: false
                                 onValueEdited: function(v) {
                                     root.intervalMinutes = v
                                     root.intervalMinutesEdited(v)
                                 }
+                            }
+
+                            RowLayout {
+                                spacing: 6
+                                Layout.fillWidth: true
+
+                                InlineTextField {
+                                    label: "Zwischen"
+                                    labelWidth: 62
+                                    value: root.startTime
+                                    placeholder: "00:00 Uhr"
+                                    displaySuffix: " Uhr"
+                                    validator: timeValidator
+                                    inputHints: Qt.ImhTime
+                                    minInputWidth: 88
+                                    preferredInputWidth: 96
+                                    Layout.preferredWidth: 164
+                                    Layout.fillWidth: false
+                                    onValueEdited: function(v) {
+                                        root._trySetStartTime(v)
+                                    }
+                                }
+
+                                InlineTextField {
+                                    label: "und"
+                                    labelWidth: 28
+                                    value: root.endTime
+                                    placeholder: "24:00 Uhr"
+                                    displaySuffix: " Uhr"
+                                    validator: timeValidator
+                                    inputHints: Qt.ImhTime
+                                    minInputWidth: 88
+                                    preferredInputWidth: 116
+                                    Layout.fillWidth: true
+                                    onValueEdited: function(v) {
+                                        root._trySetEndTime(v)
+                                    }
+                                }
+                            }
+
+                            InlineTextField {
+                                label: "Startzeit"
+                                labelWidth: 62
+                                value: root.startAnchorTime
+                                placeholder: Qt.formatTime(new Date(), "HH:mm") + " Uhr"
+                                displaySuffix: " Uhr"
+                                validator: timeValidator
+                                inputHints: Qt.ImhTime
+                                minInputWidth: 88
+                                preferredInputWidth: 96
+                                Layout.preferredWidth: 164
+                                Layout.fillWidth: false
+                                onValueEdited: function(v) {
+                                    root._trySetStartAnchorTime(v)
+                                }
+                            }
+
+                            Text {
+                                visible: root.validationMessage.length > 0
+                                text: root.validationMessage
+                                color: "#b00020"
+                                font.pixelSize: 12
+                                Layout.fillWidth: true
                             }
                         }
 

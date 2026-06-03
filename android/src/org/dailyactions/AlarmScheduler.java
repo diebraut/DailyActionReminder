@@ -26,6 +26,7 @@ public class AlarmScheduler {
     public static final String EXTRA_FIXED_TIME  = "fixedTime";
     public static final String EXTRA_START_TIME  = "startTime";
     public static final String EXTRA_END_TIME    = "endTime";
+    public static final String EXTRA_START_ANCHOR_TIME = "startAnchorTime";
 
     // ✅ Neu: Sekunden
     public static final String EXTRA_INTERVAL_SECONDS = "intervalSeconds";
@@ -153,6 +154,7 @@ public class AlarmScheduler {
             String fixedTime,
             String startTime,
             String endTime,
+            String startAnchorTime,
             int intervalSeconds,
             float volume01,
             int   durationSound
@@ -178,11 +180,17 @@ public class AlarmScheduler {
                 + " fixed=" + fixedTime
                 + " start=" + startTime
                 + " end=" + endTime
+                + " anchor=" + startAnchorTime
         );
 
         if ("interval".equalsIgnoreCase(mode)) {
             long phase = loadPhaseMs(ctx, requestId);
-            if (phase <= 0L) savePhaseMs(ctx, requestId, triggerAtMillis);
+            if (phase <= 0L) {
+                phase = triggerAtMillis > 0L
+                        ? triggerAtMillis
+                        : phaseFromStartAnchorMs(now, startAnchorTime, startTime, endTime);
+                savePhaseMs(ctx, requestId, phase);
+            }
         }
 
         try {
@@ -215,6 +223,7 @@ public class AlarmScheduler {
             i.putExtra(EXTRA_FIXED_TIME, fixedTime);
             i.putExtra(EXTRA_START_TIME, startTime);
             i.putExtra(EXTRA_END_TIME, endTime);
+            i.putExtra(EXTRA_START_ANCHOR_TIME, startAnchorTime);
 
             i.putExtra(EXTRA_INTERVAL_SECONDS, intervalSeconds);
             i.putExtra(EXTRA_VOLUME01, v);
@@ -324,6 +333,7 @@ public class AlarmScheduler {
             final String fixedTime = intent.getStringExtra(EXTRA_FIXED_TIME);
             final String startTime = intent.getStringExtra(EXTRA_START_TIME);
             final String endTime   = intent.getStringExtra(EXTRA_END_TIME);
+            final String startAnchorTime = intent.getStringExtra(EXTRA_START_ANCHOR_TIME);
 
             final float vol01 = intent.getFloatExtra(EXTRA_VOLUME01, 1.0f);
             final int durationSound = intent.getIntExtra(EXTRA_DURATION_SOUND, 1);
@@ -348,13 +358,17 @@ public class AlarmScheduler {
                     return;
                 }
 
-                // Nächsten Trigger anhand des Zeitfensters berechnen
-                // Basis ist der zuletzt geplante Trigger (+1 ms), damit wir sicher
-                // den nächsten Tick NACH dem gerade ausgelösten Alarm bekommen.
+                long phase = loadPhaseMs(appCtx, requestId);
+                if (phase <= 0L) {
+                    phase = phaseFromStartAnchorMs(lastPlannedTrigger, startAnchorTime, startTime, endTime);
+                    savePhaseMs(appCtx, requestId, phase);
+                }
+
                 next = computeNextIntervalFireMs(
                         lastPlannedTrigger + 1L,
                         (startTime != null) ? startTime : "",
                         (endTime != null) ? endTime : "",
+                        phase,
                         intervalSec
                 );
 
@@ -370,6 +384,7 @@ public class AlarmScheduler {
                     + " fixed=" + fixedTime
                     + " start=" + startTime
                     + " end=" + endTime
+                    + " anchor=" + startAnchorTime
                     + " intervalSec=" + intervalSec);
 
             scheduleWithParams(
@@ -383,6 +398,7 @@ public class AlarmScheduler {
                     (fixedTime != null) ? fixedTime : "00:00",
                     (startTime != null) ? startTime : "",
                     (endTime != null) ? endTime : "",
+                    (startAnchorTime != null) ? startAnchorTime : "",
                     intervalSec,
                     vol01,
                     durationSound
@@ -400,6 +416,32 @@ public class AlarmScheduler {
         if (now <= phase) return phase;
         long k = (now - phase + stepMs - 1) / stepMs; // ceil
         return phase + k * stepMs;
+    }
+
+    private static long phaseFromStartAnchorMs(long nowMs, String startAnchorTime) {
+        return phaseFromStartAnchorMs(nowMs, startAnchorTime, "", "");
+    }
+
+    private static long phaseFromStartAnchorMs(long nowMs, String startAnchorTime, String startTime, String endTime) {
+        int anchorMin = parseHHMMToMinutes(startAnchorTime);
+        if (anchorMin < 0) {
+            Calendar c = Calendar.getInstance();
+            c.setTimeInMillis(nowMs);
+            anchorMin = c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE);
+        }
+        long phase = dateAtMinutes(nowMs, anchorMin);
+
+        final int startMin = parseHHMMToMinutes(startTime);
+        final int endMin = parseHHMMToMinutes(endTime);
+        if (startMin >= 0 && endMin >= 0 && endMin < startMin) {
+            Calendar c = Calendar.getInstance();
+            c.setTimeInMillis(nowMs);
+            final int currentMin = c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE);
+            if (currentMin < endMin && anchorMin >= startMin)
+                phase -= 24L * 60L * 60L * 1000L;
+        }
+
+        return phase;
     }
 
     private static boolean isWithinWindow(long tMs, int startMin, int endMin) {
@@ -433,6 +475,7 @@ public class AlarmScheduler {
             if (p.length < 2) return -1;
             int hh = Integer.parseInt(p[0]);
             int mm = Integer.parseInt(p[1]);
+            if (hh == 24 && mm == 0) return 24 * 60;
             if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return -1;
             return hh * 60 + mm;
         } catch (Throwable t) {
@@ -487,35 +530,48 @@ public class AlarmScheduler {
      * - nach Ende -> nächster Tag Start
      * - im Fenster -> now + intervalSeconds (wenn >= end -> nächster Tag Start)
      */
-     static long computeNextIntervalFireMs(long nowMs, String startTime, String endTime, int intervalSeconds) {
-         final int startMin = parseHHMMToMinutes(startTime);
-         final int endMin   = parseHHMMToMinutes(endTime);
+     static long computeNextIntervalFireMs(long nowMs, String startTime, String endTime, long phaseMs, int intervalSeconds) {
+         final int startMinRaw = parseHHMMToMinutes(startTime);
+         final int endMinRaw = parseHHMMToMinutes(endTime);
+         final int startMin = startMinRaw >= 0 ? startMinRaw : 0;
+         final int endMin = endMinRaw >= 0 ? endMinRaw : 24 * 60;
 
          final long dayMs = 24L * 60L * 60L * 1000L;
-
          long start = dateAtMinutes(nowMs, startMin);
-         long end   = dateAtMinutes(nowMs, endMin);
+         long end = dateAtMinutes(nowMs, endMin);
 
-         // start==end => ganzer Tag
          if (endMin == startMin) {
              end += dayMs;
          } else if (endMin < startMin) {
-             // über Mitternacht
+             Calendar c = Calendar.getInstance();
+             c.setTimeInMillis(nowMs);
+             final int currentMin = c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE);
+             if (currentMin < endMin) {
+                 start -= dayMs;
+             } else {
+                 end += dayMs;
+             }
+         }
+
+         if (nowMs >= end) {
+             start += dayMs;
              end += dayMs;
          }
 
-         // außerhalb Fenster
-         if (nowMs < start) return start;
-         if (nowMs >= end)  return start + dayMs;
-
          final long intervalMs = Math.max(1, intervalSeconds) * 1000L;
+         final long phase = phaseMs > 0L ? phaseMs : phaseFromStartAnchorMs(nowMs, "");
+         final long searchFrom = Math.max(nowMs, start);
+         long next = computeNextFromPhase(searchFrom, phase, intervalMs);
 
-         // ✅ auf Tick ausrichten: nächster Tick ab "start"
-         long elapsed = nowMs - start;
-         long k = elapsed / intervalMs;              // aktueller Tick-Index
-         long next = start + (k + 1) * intervalMs;   // nächster Tick
+         if (next < start) {
+             next = computeNextFromPhase(start, phase, intervalMs);
+         }
 
-         if (next >= end) return start + dayMs;
-         return next;
+         if (next >= end) {
+             start += dayMs;
+             next = computeNextFromPhase(start, phase, intervalMs);
+         }
+
+         return Math.max(next, nowMs + 1L);
      }
 }

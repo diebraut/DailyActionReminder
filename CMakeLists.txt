@@ -112,8 +112,29 @@ if(IOS)
         XCODE_ATTRIBUTE_FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*] "$(inherited) ${QT_IOS_FFMPEG_DIR}/libavformat.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libavcodec.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libavutil.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libswresample.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libswscale.xcframework/ios-arm64"
         XCODE_ATTRIBUTE_FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*] "$(inherited) ${QT_IOS_FFMPEG_DIR}/libavformat.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libavcodec.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libavutil.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libswresample.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libswscale.xcframework/ios-x86_64-simulator"
         XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "$(inherited) @executable_path/Frameworks @loader_path/Frameworks"
-        XCODE_EMBED_FRAMEWORKS "${QT_IOS_FFMPEG_DIR}/libavformat.xcframework/ios-arm64/libavformat.framework;${QT_IOS_FFMPEG_DIR}/libavcodec.xcframework/ios-arm64/libavcodec.framework;${QT_IOS_FFMPEG_DIR}/libavutil.xcframework/ios-arm64/libavutil.framework;${QT_IOS_FFMPEG_DIR}/libswresample.xcframework/ios-arm64/libswresample.framework;${QT_IOS_FFMPEG_DIR}/libswscale.xcframework/ios-arm64/libswscale.framework"
-        XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY TRUE
+    )
+
+    add_custom_command(TARGET appDailyActionReminder POST_BUILD
+        COMMAND /bin/sh -c "set -e
+            slice=ios-arm64
+            if [ \"\${PLATFORM_NAME}\" = \"iphonesimulator\" ]; then
+                slice=ios-x86_64-simulator
+            fi
+
+            frameworks_dir=\"\${TARGET_BUILD_DIR}/\${FRAMEWORKS_FOLDER_PATH}\"
+            mkdir -p \"\${frameworks_dir}\"
+
+            for lib in avformat avcodec avutil swresample swscale; do
+                src=\"${QT_IOS_FFMPEG_DIR}/lib\${lib}.xcframework/\${slice}/lib\${lib}.framework\"
+                dst=\"\${frameworks_dir}/lib\${lib}.framework\"
+                rm -rf \"\${dst}\"
+                cp -R \"\${src}\" \"\${frameworks_dir}/\"
+
+                if [ -n \"\${EXPANDED_CODE_SIGN_IDENTITY}\" ]; then
+                    codesign --force --sign \"\${EXPANDED_CODE_SIGN_IDENTITY}\" --preserve-metadata=identifier,entitlements \"\${dst}\"
+                fi
+            done"
+        VERBATIM
     )
 endif()
 

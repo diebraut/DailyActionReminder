@@ -60,7 +60,8 @@ static void playNotificationSoundFromUserInfo(NSDictionary *userInfo)
     playNotificationSoundFromUserInfo(notification.request.content.userInfo);
 
     completionHandler(UNNotificationPresentationOptionBanner |
-                      UNNotificationPresentationOptionList);
+                      UNNotificationPresentationOptionList |
+                      UNNotificationPresentationOptionSound);
 }
 
 @end
@@ -74,6 +75,7 @@ QString keyMode(int id) { return QStringLiteral("SoundTaskManagerIos/mode_%1").a
 QString keyFixedTime(int id) { return QStringLiteral("SoundTaskManagerIos/fixedTime_%1").arg(id); }
 QString keyStartTime(int id) { return QStringLiteral("SoundTaskManagerIos/startTime_%1").arg(id); }
 QString keyEndTime(int id) { return QStringLiteral("SoundTaskManagerIos/endTime_%1").arg(id); }
+QString keyStartAnchorTime(int id) { return QStringLiteral("SoundTaskManagerIos/startAnchorTime_%1").arg(id); }
 QString keyIntervalSeconds(int id) { return QStringLiteral("SoundTaskManagerIos/intervalSeconds_%1").arg(id); }
 
 NSString *toNSString(const QString &value)
@@ -159,7 +161,7 @@ QString normalizeSoundName(QString soundName)
     return soundName;
 }
 
-UNNotificationSound *notificationSound(const QString &soundName)
+UNNotificationSound *notificationSound(SoundTaskManagerIos *self, const QString &soundName)
 {
     const QString normalized = normalizeSoundName(soundName);
     NSString *name = toNSString(normalized);
@@ -167,6 +169,7 @@ UNNotificationSound *notificationSound(const QString &soundName)
                                 withExtension:[name pathExtension]]) {
         return [UNNotificationSound soundNamed:name];
     }
+    postLog(self, QStringLiteral("[iOS] notification sound not in bundle, using default: %1").arg(normalized));
     return [UNNotificationSound defaultSound];
 }
 
@@ -181,6 +184,9 @@ int parseHHMMToMinutes(const QString &time)
     bool okM = false;
     const int h = parts[0].toInt(&okH);
     const int m = parts[1].toInt(&okM);
+    if (okH && okM && h == 24 && m == 0)
+        return 24 * 60;
+
     if (!okH || !okM || h < 0 || h > 23 || m < 0 || m > 59)
         return -1;
 
@@ -210,6 +216,8 @@ qint64 computeNextFixedFireMs(qint64 nowMs, const QString &fixedTime)
 qint64 computeNextIntervalFireMs(qint64 nowMs,
                                  const QString &startTime,
                                  const QString &endTime,
+                                 const QString &startAnchorTime,
+                                 qint64 startAnchorMs,
                                  int intervalSeconds)
 {
     if (intervalSeconds <= 0)
@@ -217,28 +225,62 @@ qint64 computeNextIntervalFireMs(qint64 nowMs,
 
     const int startMinRaw = parseHHMMToMinutes(startTime);
     const int endMinRaw = parseHHMMToMinutes(endTime);
+    const int anchorMinRaw = parseHHMMToMinutes(startAnchorTime);
     const int startMin = startMinRaw >= 0 ? startMinRaw : 0;
-    const int endMin = endMinRaw >= 0 ? endMinRaw : startMin;
+    const int endMin = endMinRaw >= 0 ? endMinRaw : 24 * 60;
 
     const QDateTime now = QDateTime::fromMSecsSinceEpoch(nowMs).toLocalTime();
+    const int currentMin = now.time().hour() * 60 + now.time().minute();
+    const int anchorMin = anchorMinRaw >= 0
+                              ? anchorMinRaw
+                              : now.time().hour() * 60 + now.time().minute();
     QDateTime start = dateAtMinutes(now, startMin);
     QDateTime end = dateAtMinutes(now, endMin);
+    QDateTime anchor = startAnchorMs > 0
+            ? QDateTime::fromMSecsSinceEpoch(startAnchorMs).toLocalTime()
+            : dateAtMinutes(now, anchorMin);
 
-    if (endMin == startMin || endMin < startMin)
+    if (endMin == startMin) {
         end = end.addDays(1);
+    } else if (endMin < startMin) {
+        if (currentMin < endMin) {
+            start = start.addDays(-1);
+            if (anchorMin >= startMin)
+                anchor = anchor.addDays(-1);
+        } else {
+            end = end.addDays(1);
+        }
+    }
 
-    if (now < start)
-        return start.toMSecsSinceEpoch();
-
-    if (now >= end)
-        return start.addDays(1).toMSecsSinceEpoch();
+    if (now >= end) {
+        start = start.addDays(1);
+        end = end.addDays(1);
+    }
 
     const qint64 intervalMs = qMax<qint64>(1000, qint64(intervalSeconds) * 1000);
-    const qint64 elapsed = now.toMSecsSinceEpoch() - start.toMSecsSinceEpoch();
-    const qint64 next = start.toMSecsSinceEpoch() + ((elapsed / intervalMs) + 1) * intervalMs;
 
-    if (next >= end.toMSecsSinceEpoch())
-        return start.addDays(1).toMSecsSinceEpoch();
+    if (anchor > now && anchor >= start && anchor < end) {
+        const qint64 firstAfterStart = anchor.toMSecsSinceEpoch() + intervalMs;
+        if (firstAfterStart < end.toMSecsSinceEpoch())
+            return firstAfterStart;
+    }
+
+    const qint64 searchFrom = qMax(now.toMSecsSinceEpoch(), start.toMSecsSinceEpoch());
+    qint64 k = (searchFrom - anchor.toMSecsSinceEpoch() + intervalMs - 1) / intervalMs;
+    if (k < 0)
+        k = 0;
+    qint64 next = anchor.toMSecsSinceEpoch() + k * intervalMs;
+
+    if (next < start.toMSecsSinceEpoch()) {
+        k = (start.toMSecsSinceEpoch() - anchor.toMSecsSinceEpoch() + intervalMs - 1) / intervalMs;
+        next = anchor.toMSecsSinceEpoch() + k * intervalMs;
+    }
+
+    if (next >= end.toMSecsSinceEpoch()) {
+        start = start.addDays(1);
+        k = (start.toMSecsSinceEpoch() - anchor.toMSecsSinceEpoch() + intervalMs - 1) / intervalMs;
+        next = anchor.toMSecsSinceEpoch() + k * intervalMs;
+    }
 
     return next;
 }
@@ -246,12 +288,13 @@ qint64 computeNextIntervalFireMs(qint64 nowMs,
 UNMutableNotificationContent *makeContent(const QString &title,
                                           const QString &text,
                                           const QString &soundName,
-                                          float volume01)
+                                          float volume01,
+                                          SoundTaskManagerIos *self)
 {
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
     content.title = toNSString(title.isEmpty() ? QStringLiteral("DailyActions") : title);
     content.body = toNSString(text);
-    content.sound = notificationSound(soundName);
+    content.sound = notificationSound(self, soundName);
     const QString normalized = normalizeSoundName(soundName);
     content.userInfo = @{
         @"soundName": toNSString(normalized),
@@ -359,6 +402,44 @@ bool hasPendingForId(int requestId)
     return found;
 }
 
+qint64 nextPendingAtForId(int requestId)
+{
+    const NSString *prefix = toNSString(identifierPrefix(requestId));
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    __block qint64 bestMs = 0;
+
+    [[UNUserNotificationCenter currentNotificationCenter] getPendingNotificationRequestsWithCompletionHandler:
+     ^(NSArray<UNNotificationRequest *> *requests) {
+        for (UNNotificationRequest *request in requests) {
+            if (![request.identifier isEqualToString:(NSString *)prefix] &&
+                ![request.identifier hasPrefix:[(NSString *)prefix stringByAppendingString:@"."]]) {
+                continue;
+            }
+
+            NSDate *nextDate = nil;
+            if ([request.trigger isKindOfClass:[UNCalendarNotificationTrigger class]]) {
+                nextDate = [(UNCalendarNotificationTrigger *)request.trigger nextTriggerDate];
+            } else if ([request.trigger isKindOfClass:[UNTimeIntervalNotificationTrigger class]]) {
+                nextDate = [(UNTimeIntervalNotificationTrigger *)request.trigger nextTriggerDate];
+            }
+            if (!nextDate)
+                continue;
+
+            const qint64 candidateMs = qint64([nextDate timeIntervalSince1970] * 1000.0);
+            if (candidateMs <= nowMs)
+                continue;
+
+            if (bestMs <= 0 || candidateMs < bestMs)
+                bestMs = candidateMs;
+        }
+        dispatch_semaphore_signal(sem);
+    }];
+
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 5LL * NSEC_PER_SEC));
+    return bestMs;
+}
+
 void clearSettingsForId(int requestId)
 {
     QSettings settings;
@@ -367,6 +448,7 @@ void clearSettingsForId(int requestId)
     settings.remove(keyFixedTime(requestId));
     settings.remove(keyStartTime(requestId));
     settings.remove(keyEndTime(requestId));
+    settings.remove(keyStartAnchorTime(requestId));
     settings.remove(keyIntervalSeconds(requestId));
 }
 
@@ -376,6 +458,7 @@ void saveScheduleState(int requestId,
                        const QString &fixedTime,
                        const QString &startTime,
                        const QString &endTime,
+                       const QString &startAnchorTime,
                        int intervalSeconds)
 {
     QSettings settings;
@@ -384,6 +467,7 @@ void saveScheduleState(int requestId,
     settings.setValue(keyFixedTime(requestId), fixedTime);
     settings.setValue(keyStartTime(requestId), startTime);
     settings.setValue(keyEndTime(requestId), endTime);
+    settings.setValue(keyStartAnchorTime(requestId), startAnchorTime);
     settings.setValue(keyIntervalSeconds(requestId), intervalSeconds);
 }
 
@@ -451,6 +535,7 @@ int SoundTaskManagerIos::startFixedSoundTask(const QString &rawSound,
                                        fixedTime,
                                        QString(),
                                        QString(),
+                                       QString(),
                                        0,
                                        volume01,
                                        soundDurationSec);
@@ -462,6 +547,7 @@ int SoundTaskManagerIos::startIntervalSoundTask(const QString &rawSound,
                                                 const QString &notificationTxt,
                                                 qint64 startTimeMs,
                                                 qint64 endTimeMs,
+                                                qint64 startAnchorTimeMs,
                                                 int intervalSecs,
                                                 float volume01,
                                                 int soundDurationSec)
@@ -474,9 +560,12 @@ int SoundTaskManagerIos::startIntervalSoundTask(const QString &rawSound,
     const int id = nextId();
     const QString startTime = QDateTime::fromMSecsSinceEpoch(startTimeMs).toLocalTime().time().toString(QStringLiteral("HH:mm"));
     const QString endTime = QDateTime::fromMSecsSinceEpoch(endTimeMs).toLocalTime().time().toString(QStringLiteral("HH:mm"));
+    const QString startAnchorTime = QDateTime::fromMSecsSinceEpoch(startAnchorTimeMs > 0 ? startAnchorTimeMs : QDateTime::currentMSecsSinceEpoch()).toLocalTime().time().toString(QStringLiteral("HH:mm"));
     const qint64 firstAt = computeNextIntervalFireMs(QDateTime::currentMSecsSinceEpoch(),
                                                      startTime,
                                                      endTime,
+                                                     startAnchorTime,
+                                                     startAnchorTimeMs,
                                                      intervalSecs);
 
     const bool ok = scheduleWithParams(firstAt,
@@ -488,6 +577,7 @@ int SoundTaskManagerIos::startIntervalSoundTask(const QString &rawSound,
                                        QStringLiteral("00:00"),
                                        startTime,
                                        endTime,
+                                       startAnchorTime,
                                        intervalSecs,
                                        volume01,
                                        soundDurationSec);
@@ -504,6 +594,7 @@ bool SoundTaskManagerIos::scheduleWithParams(qint64 triggerAtMillis,
                                              const QString &fixedTime,
                                              const QString &startTime,
                                              const QString &endTime,
+                                             const QString &startAnchorTime,
                                              int intervalSeconds,
                                              float volume01,
                                              int durationSound)
@@ -518,16 +609,19 @@ bool SoundTaskManagerIos::scheduleWithParams(qint64 triggerAtMillis,
     const QString normalizedMode = mode.compare(QStringLiteral("interval"), Qt::CaseInsensitive) == 0
                                        ? QStringLiteral("interval")
                                        : QStringLiteral("fixedTime");
-    UNMutableNotificationContent *content = makeContent(title, text, soundName, volume01);
+    UNMutableNotificationContent *content = makeContent(title, text, soundName, volume01, this);
     QString errorText;
     bool ok = true;
     qint64 firstAt = triggerAtMillis;
+    int scheduledCount = 0;
 
     if (normalizedMode == QStringLiteral("interval")) {
         const int seconds = qMax(1, intervalSeconds);
         firstAt = firstAt > 0 ? firstAt : computeNextIntervalFireMs(QDateTime::currentMSecsSinceEpoch(),
                                                                     startTime,
                                                                     endTime,
+                                                                    startAnchorTime,
+                                                                    0,
                                                                     seconds);
 
         qint64 at = firstAt;
@@ -539,7 +633,11 @@ bool SoundTaskManagerIos::scheduleWithParams(qint64 triggerAtMillis,
             if (!ok)
                 break;
 
-            at = computeNextIntervalFireMs(at + 1, startTime, endTime, seconds);
+            scheduledCount++;
+            const qint64 nextAt = computeNextIntervalFireMs(at + 1, startTime, endTime, startAnchorTime, firstAt, seconds);
+            if (nextAt <= at)
+                break;
+            at = nextAt;
         }
     } else {
         if (firstAt <= 0)
@@ -552,6 +650,7 @@ bool SoundTaskManagerIos::scheduleWithParams(qint64 triggerAtMillis,
             [UNCalendarNotificationTrigger triggerWithDateMatchingComponents:dailyComponentsForHHMM(fixedForTrigger)
                                                                      repeats:YES];
         ok = addRequest(fixedIdentifier(requestId), content, trigger, &errorText);
+        scheduledCount = ok ? 1 : 0;
         firstAt = computeNextFixedFireMs(QDateTime::currentMSecsSinceEpoch(), fixedForTrigger);
     }
 
@@ -569,11 +668,14 @@ bool SoundTaskManagerIos::scheduleWithParams(qint64 triggerAtMillis,
                           : fixedTime,
                       startTime,
                       endTime,
+                      startAnchorTime,
                       intervalSeconds);
-    emit logLine(QStringLiteral("[iOS] schedule id=%1 mode=%2 first=%3 sound=%4")
+    emit logLine(QStringLiteral("[iOS] schedule id=%1 mode=%2 first=%3 anchor=%4 count=%5 sound=%6")
                      .arg(requestId)
                      .arg(normalizedMode)
                      .arg(QDateTime::fromMSecsSinceEpoch(firstAt).toLocalTime().toString(Qt::ISODate))
+                     .arg(startAnchorTime)
+                     .arg(scheduledCount)
                      .arg(normalizeSoundName(soundName)));
     return true;
 }
@@ -620,18 +722,27 @@ qint64 SoundTaskManagerIos::getNextAtMs(int alarmId) const
 
     QSettings settings;
     const qint64 stored = settings.value(keyNextAt(alarmId), 0).toLongLong();
-    if (stored <= 0)
-        return 0;
-
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
     if (stored > now)
         return stored;
+
+    const qint64 pending = nextPendingAtForId(alarmId);
+    if (pending > 0) {
+        settings.setValue(keyNextAt(alarmId), pending);
+        return pending;
+    }
+
+    if (stored <= 0)
+        return 0;
 
     const QString mode = settings.value(keyMode(alarmId)).toString();
     if (mode == QStringLiteral("interval")) {
         return computeNextIntervalFireMs(now,
                                          settings.value(keyStartTime(alarmId)).toString(),
                                          settings.value(keyEndTime(alarmId)).toString(),
+                                         settings.value(keyStartAnchorTime(alarmId)).toString(),
+                                         0,
                                          settings.value(keyIntervalSeconds(alarmId), 1).toInt());
     }
 

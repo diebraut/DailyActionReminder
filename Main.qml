@@ -236,9 +236,12 @@ ApplicationWindow {
 
         const startMs = _hhmmToTodayMs(nowMs, o.startTime || "")
         const endMs   = _hhmmToTodayMs(nowMs, o.endTime || "")
+        const anchorMs = (typeof o.startAnchorMs === "number" && o.startAnchorMs > 0)
+                ? o.startAnchorMs
+                : _hhmmToTodayMs(nowMs, o.startAnchorTime || Qt.formatTime(new Date(nowMs), "HH:mm"))
 
-        dbg("[SoundTaskManager] startInterval idx=", idx, " startMs=", startMs, " endMs=", endMs, " intervalSecs=", intervalSecs, " vol=", effectiveVol)
-        const newId2 = SoundTaskManager.startIntervalSoundTask(rawSound, txt, startMs, endMs, intervalSecs, effectiveVol, durationSound)
+        dbg("[SoundTaskManager] startInterval idx=", idx, " startMs=", startMs, " endMs=", endMs, " anchorMs=", anchorMs, " intervalSecs=", intervalSecs, " vol=", effectiveVol)
+        const newId2 = SoundTaskManager.startIntervalSoundTask(rawSound, txt, startMs, endMs, anchorMs, intervalSecs, effectiveVol, durationSound)
         dbg("[SoundTaskManager] startInterval -> id=", newId2)
         if (newId2 > 0) {
             actionModel.setProperty(idx, "alarmId", newId2)
@@ -263,6 +266,10 @@ ApplicationWindow {
                 fixedTime: (o.fixedTime ?? "00:00"),
                 startTime: (o.startTime ?? ""),
                 endTime: (o.endTime ?? ""),
+                startAnchorTime: (o.startAnchorTime ?? Qt.formatTime(new Date(), "HH:mm")),
+                startAnchorMs: (typeof o.startAnchorMs === "number") ? o.startAnchorMs : 0.0,
+                intervalPaused: false,
+                intervalStartsInSeconds: -1,
                 intervalMinutes: intervalMinutes,
                 durationSound: (typeof o.durationSound === "number" && !isNaN(o.durationSound)) ? o.durationSound : 1,
                 sound: (o.sound ?? "Bell"),
@@ -341,6 +348,10 @@ ApplicationWindow {
                     fixedTime: (typeof o.fixedTime === "string" && o.fixedTime.length > 0) ? o.fixedTime : "00:00",
                     startTime: (typeof o.startTime === "string") ? o.startTime : "",
                     endTime: (typeof o.endTime === "string") ? o.endTime : "",
+                    startAnchorTime: (typeof o.startAnchorTime === "string" && o.startAnchorTime.length > 0) ? o.startAnchorTime : Qt.formatTime(new Date(), "HH:mm"),
+                    startAnchorMs: (typeof o.startAnchorMs === "number") ? o.startAnchorMs : parseFloat(o.startAnchorMs || 0.0),
+                    intervalPaused: false,
+                    intervalStartsInSeconds: -1,
                     intervalMinutes: intervalMinutes,
                     durationSound: durationSound,
                     sound: (typeof o.sound === "string" && o.sound.trim().length > 0) ? o.sound : "Bell",
@@ -386,6 +397,7 @@ ApplicationWindow {
                 "fixedTime",
                 o.fixedTime || "",
                 "", "",
+                "",
                 0,
                 effectiveVol,
                 durationSound
@@ -407,6 +419,7 @@ ApplicationWindow {
                 "",
                 o.startTime || "",
                 o.endTime || "",
+                o.startAnchorTime || "",
                 intervalSec,
                 effectiveVol,
                 durationSound
@@ -427,6 +440,10 @@ ApplicationWindow {
             "fixedTime": "08:00",
             "startTime": "",
             "endTime": "",
+            "startAnchorTime": Qt.formatTime(new Date(), "HH:mm"),
+            "startAnchorMs": 0.0,
+            "intervalPaused": false,
+            "intervalStartsInSeconds": -1,
             "intervalMinutes": 60,
             "durationSound": 1,
             "sound": "Bell",
@@ -440,6 +457,10 @@ ApplicationWindow {
             "fixedTime": "00:00",
             "startTime": "09:00",
             "endTime": "18:00",
+            "startAnchorTime": Qt.formatTime(new Date(), "HH:mm"),
+            "startAnchorMs": 0.0,
+            "intervalPaused": false,
+            "intervalStartsInSeconds": -1,
             "intervalMinutes": 60,
             "durationSound": 1,
             "sound": "Bell",
@@ -459,6 +480,8 @@ ApplicationWindow {
         if (idx < 0 || idx >= actionModel.count) return
 
         actionModel.setProperty(idx, role, value)
+        if (role === "startAnchorTime")
+            actionModel.setProperty(idx, "startAnchorMs", _hhmmToTodayMs(Date.now(), value || ""))
         saveNow()
 
         if (app.expandedIndex === idx) {
@@ -467,18 +490,17 @@ ApplicationWindow {
 
         if (actionsRunning && (
                 role === "mode" ||
-                role === "startTime" || role === "endTime" || role === "intervalMinutes" ||
+                role === "startTime" || role === "endTime" || role === "startAnchorTime" || role === "intervalMinutes" ||
                 role === "fixedTime"
             )) {
 
+            cancelTaskManagerForIndex(idx)
             actionModel.setProperty(idx, "nextFireMs", 0)
             actionModel.setProperty(idx, "lastFiredMs", 0)
 
-            Qt.callLater(function() {
-                const nowMs = Date.now()
-                scheduleForIndex(idx, nowMs)
-                scheduleTaskManagerForIndex(idx, nowMs)
-            })
+            const nowMs = Date.now()
+            scheduleForIndex(idx, nowMs)
+            scheduleTaskManagerForIndex(idx, nowMs)
         }
         if (actionsRunning && (role === "sound" || role === "soundEnabled" || role === "volume")) {
             dbg("[main] sound changed", "role=", role)
@@ -516,6 +538,10 @@ ApplicationWindow {
             "fixedTime": "00:00",
             "startTime": "",
             "endTime": "",
+            "startAnchorTime": Qt.formatTime(new Date(), "HH:mm"),
+            "startAnchorMs": 0.0,
+            "intervalPaused": false,
+            "intervalStartsInSeconds": -1,
             "intervalMinutes": 60,
             "durationSound": 1,
             "sound": "Bell",
@@ -730,10 +756,12 @@ ApplicationWindow {
         SoundTaskManager.cancelAll(collectAlarmIds())
         actionsRunning = true
 
+        const nowMs = Date.now()
+        resetIntervalStartAnchors(nowMs)
+
         schedulerInit()
 
         // UI+Model einmal initial
-        const nowMs = Date.now()
         initUiAll(nowMs)
 
         // echtes Scheduling einmalig
@@ -741,6 +769,29 @@ ApplicationWindow {
 
         // optional: explizit einmal tick, falls du es sofort willst
         schedulerStep()
+    }
+
+    function resetIntervalStartAnchors(nowMs) {
+        const anchor = Qt.formatTime(new Date(nowMs), "HH:mm")
+        let changed = false
+
+        for (let i = 0; i < actionModel.count; i++) {
+            const o = actionModel.get(i)
+            if ((o.mode || "fixed") !== "interval")
+                continue
+
+            if (o.startAnchorTime !== anchor) {
+                actionModel.setProperty(i, "startAnchorTime", anchor)
+                changed = true
+            }
+            if (o.startAnchorMs !== nowMs) {
+                actionModel.setProperty(i, "startAnchorMs", nowMs)
+                changed = true
+            }
+        }
+
+        if (changed)
+            saveNow()
     }
 
     function initUiAll(nowMs) {
@@ -789,6 +840,8 @@ ApplicationWindow {
     function _clearIntervalCountdown(i) {
         actionModel.setProperty(i, "nextInMinutes", -1)
         actionModel.setProperty(i, "nextInSeconds", -1)
+        actionModel.setProperty(i, "intervalPaused", false)
+        actionModel.setProperty(i, "intervalStartsInSeconds", -1)
     }
     function _clearFixedCountdown(i) {
         actionModel.setProperty(i, "nextFixedH", -1)
@@ -806,16 +859,12 @@ ApplicationWindow {
             return
         }
 
-        if (msLeft <= 60000) {
-            const secsTotal = Math.max(0, Math.floor(msLeft / 1000.0))
-            actionModel.setProperty(i, "nextInMinutes", -1)
-            actionModel.setProperty(i, "nextInSeconds", secsTotal)
-            return
-        }
-
-        const mins = Math.max(1, Math.ceil(msLeft / 60000.0))
+        const secsTotal = Math.max(0, Math.floor(msLeft / 1000.0))
+        const mins = Math.max(0, Math.floor(secsTotal / 60))
         actionModel.setProperty(i, "nextInMinutes", mins)
-        actionModel.setProperty(i, "nextInSeconds", -1)
+        actionModel.setProperty(i, "nextInSeconds", secsTotal)
+        actionModel.setProperty(i, "intervalPaused", false)
+        actionModel.setProperty(i, "intervalStartsInSeconds", -1)
     }
 
     function _setFixedCountdown(i, targetMs, nowMs) {
@@ -907,59 +956,27 @@ ApplicationWindow {
             return d.getTime()
         }
 
-        const startMs0 = hhmmToTodayMs(o.startTime || "", nowMs)
-        const endMs0   = hhmmToTodayMs(o.endTime   || "", nowMs)
-
-        const hasStart = startMs0 > 0
-        const hasEnd   = endMs0 > 0
-
-        // Fenster heute
-        let winStart = startMs0
-        let winEnd   = endMs0
-
-        // über Mitternacht: end <= start => end + 24h
-        const dayMs = 24 * 60 * 60 * 1000
-        if (hasStart && hasEnd && winEnd <= winStart) {
-            winEnd += dayMs
-        }
-
-        // 1) firstAt: erst nach Intervall
-        let nextMs = nowMs + intervalMs
-
-        // 2) auf Zeitfenster schieben
-        function inWindow(t, s, e) {
-            if (hasStart && hasEnd) return (t >= s && t < e)
-            if (hasStart) return (t >= s)
-            if (hasEnd)   return (t < e)
-            return true
-        }
-
-        if (hasStart || hasEnd) {
-            if (hasStart && hasEnd) {
-                if (!inWindow(nextMs, winStart, winEnd)) {
-                    if (nextMs < winStart) {
-                        nextMs = winStart
-                    } else {
-                        // nach Endfenster -> nächstes Fenster (morgen) am Start
-                        nextMs = winStart + dayMs
-                    }
-                }
-            } else if (hasStart && !hasEnd) {
-                if (nextMs < winStart) nextMs = winStart
-            } else if (!hasStart && hasEnd) {
-                // nur End: wenn nextMs >= end, dann nicht sinnvoll -> kein next
-                if (nextMs >= winEnd) {
-                    _clearIntervalCountdown(idx)
-                    actionModel.setProperty(idx, "nextFireMs", 0)
-                    actionModel.setProperty(idx, "lastFiredMs", 0)
-                    return
-                }
-            }
-        }
+        const nextMs = computeNextIntervalFireMs(nowMs,
+                                                 o.startTime || "",
+                                                 o.endTime || "",
+                                                 o.startAnchorTime || Qt.formatTime(new Date(nowMs), "HH:mm"),
+                                                 (typeof o.startAnchorMs === "number") ? o.startAnchorMs : 0,
+                                                 intervalMinutes)
 
         actionModel.setProperty(idx, "nextFireMs", nextMs)
         actionModel.setProperty(idx, "lastFiredMs", 0)
-        _setIntervalCountdown(idx, nextMs, nowMs)
+
+        const startAnchorMs = (typeof o.startAnchorMs === "number") ? o.startAnchorMs : 0
+        if (startAnchorMs > nowMs) {
+            const startsInSeconds = Math.max(0, Math.floor((startAnchorMs - nowMs) / 1000.0))
+            const pausedSeconds = Math.max(0, intervalMinutes * 60)
+            actionModel.setProperty(idx, "nextInMinutes", Math.floor(pausedSeconds / 60))
+            actionModel.setProperty(idx, "nextInSeconds", pausedSeconds)
+            actionModel.setProperty(idx, "intervalPaused", true)
+            actionModel.setProperty(idx, "intervalStartsInSeconds", startsInSeconds)
+        } else {
+            _setIntervalCountdown(idx, nextMs, nowMs)
+        }
     }
 
     function schedulerInit() {
@@ -1009,31 +1026,35 @@ ApplicationWindow {
                     continue
                 }
 
-                // 1) primär: echte Android-Planung lesen
-                const id = (typeof o.alarmId === "number") ? o.alarmId : 0
-                let nextMs = 0
+                let nextMs = computeNextIntervalFireMs(nowMs,
+                                                       o.startTime || "",
+                                                       o.endTime || "",
+                                                       o.startAnchorTime || Qt.formatTime(new Date(nowMs), "HH:mm"),
+                                                       (typeof o.startAnchorMs === "number") ? o.startAnchorMs : 0,
+                                                       intervalMinutes)
 
-                if (id > 0) {
-                    nextMs = SoundTaskManager.getNextAtMs(id)   // <<<<<< der Sync-Key
-                }
-
-                // 2) Fallback: falls Android nichts liefert (z.B. Desktop oder noch nicht gespeichert)
-                if (!nextMs || isNaN(nextMs) || nextMs <= 0) {
+                if (!nextMs || isNaN(nextMs) || nextMs <= 0)
                     nextMs = parseInt(o.nextFireMs || 0)
-                    if (!nextMs || isNaN(nextMs) || nextMs <= 0) {
-                        // “erst nach Intervall”
-                        nextMs = nowMs + intervalMinutes * 60 * 1000
-                    }
-                }
 
-                // 3) UI aktualisieren
                 if (nextMs !== parseInt(o.nextFireMs || 0)) {
                     actionModel.setProperty(i, "nextFireMs", nextMs)
                 }
-                _setIntervalCountdown(i, nextMs, nowMs)
 
-                // WICHTIG: kein lastFired/computeNextIntervalFireMs mehr in der UI!
-                // Android reschedult selbst und speichert nextAtMs.
+                const startAnchorMs = (typeof o.startAnchorMs === "number") ? o.startAnchorMs : 0
+                if (startAnchorMs > nowMs) {
+                    const startsInSeconds = Math.max(0, Math.floor((startAnchorMs - nowMs) / 1000.0))
+                    const pausedSeconds = Math.max(0, intervalMinutes * 60)
+                    actionModel.setProperty(i, "nextInMinutes", Math.floor(pausedSeconds / 60))
+                    actionModel.setProperty(i, "nextInSeconds", pausedSeconds)
+                    actionModel.setProperty(i, "intervalPaused", true)
+                    actionModel.setProperty(i, "intervalStartsInSeconds", startsInSeconds)
+                } else {
+                    _setIntervalCountdown(i, nextMs, nowMs)
+                }
+
+                // Native Scheduler wird bei Änderungen separat neu geplant.
+                // Der sichtbare Counter folgt der lokalen Berechnung, damit
+                // Startzeit/Intervall-Änderungen sofort wirken.
             } else {
                 let nextMsF = parseInt(o.nextFireMs || 0)
                 if (!nextMsF || isNaN(nextMsF) || nextMsF <= 0) {
@@ -1068,8 +1089,11 @@ ApplicationWindow {
         if (isNaN(h)) h = 0
         if (isNaN(m)) m = 0
 
-        h = Math.max(0, Math.min(23, h))
         m = Math.max(0, Math.min(59, m))
+        if (h === 24 && m === 0)
+            return 24 * 60
+
+        h = Math.max(0, Math.min(23, h))
         return h * 60 + m
     }
 
@@ -1079,43 +1103,62 @@ ApplicationWindow {
         return d
     }
 
-    function computeNextIntervalFireMs(nowMs, startTime, endTime, intervalMinutes) {
+    function computeNextIntervalFireMs(nowMs, startTime, endTime, startAnchorTime, startAnchorMs, intervalMinutes) {
         const now = new Date(nowMs)
+        const currentMin = now.getHours() * 60 + now.getMinutes()
 
-        const startMin = parseHHMMToMinutes(startTime)
-        const endMin = parseHHMMToMinutes(endTime)
+        const startMin = (typeof startTime === "string" && startTime.trim().length > 0) ? parseHHMMToMinutes(startTime) : 0
+        const endMin = (typeof endTime === "string" && endTime.trim().length > 0) ? parseHHMMToMinutes(endTime) : 24 * 60
+        const anchorMin = parseHHMMToMinutes(startAnchorTime || Qt.formatTime(now, "HH:mm"))
 
         let start = dateAtMinutes(now, startMin)
         let end = dateAtMinutes(now, endMin)
+        let anchor = (typeof startAnchorMs === "number" && startAnchorMs > 0)
+                ? new Date(startAnchorMs)
+                : dateAtMinutes(now, anchorMin)
 
         if (endMin === startMin) {
             end.setDate(end.getDate() + 1)
         } else if (endMin < startMin) {
-            end.setDate(end.getDate() + 1)
+            if (currentMin < endMin) {
+                start.setDate(start.getDate() - 1)
+                if (anchorMin >= startMin)
+                    anchor.setDate(anchor.getDate() - 1)
+            } else {
+                end.setDate(end.getDate() + 1)
+            }
         }
-
-        if (now.getTime() < start.getTime())
-            return start.getTime()
 
         if (now.getTime() >= end.getTime()) {
             start.setDate(start.getDate() + 1)
-            return start.getTime()
+            end.setDate(end.getDate() + 1)
         }
 
         const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000
-        const elapsedMs = now.getTime() - start.getTime()
+
+        if (anchor.getTime() > now.getTime() &&
+                anchor.getTime() >= start.getTime() &&
+                anchor.getTime() < end.getTime()) {
+            const firstAfterStart = anchor.getTime() + intervalMs
+            if (firstAfterStart < end.getTime())
+                return firstAfterStart
+        }
+
+        let searchFrom = Math.max(now.getTime(), start.getTime())
+        let elapsedMs = searchFrom - anchor.getTime()
 
         let k = Math.ceil(elapsedMs / intervalMs)
         if (k < 0) k = 0
 
-        let next = new Date(start.getTime() + k * intervalMs)
+        let next = new Date(anchor.getTime() + k * intervalMs)
 
         if (next.getTime() < start.getTime())
-            next = start
+            next = new Date(anchor.getTime() + Math.ceil((start.getTime() - anchor.getTime()) / intervalMs) * intervalMs)
 
         if (next.getTime() >= end.getTime()) {
             start.setDate(start.getDate() + 1)
-            next = start
+            end.setDate(end.getDate() + 1)
+            next = new Date(anchor.getTime() + Math.ceil((start.getTime() - anchor.getTime()) / intervalMs) * intervalMs)
         }
 
         return next.getTime()
@@ -1303,10 +1346,13 @@ ApplicationWindow {
                 fixedTime: model.fixedTime
                 startTime: model.startTime
                 endTime: model.endTime
+                startAnchorTime: model.startAnchorTime || Qt.formatTime(new Date(), "HH:mm")
                 intervalMinutes: model.intervalMinutes
 
                 nextInMinutes: (app.actionsRunning && typeof model.nextInMinutes === "number") ? model.nextInMinutes : -1
                 nextInSeconds: (app.actionsRunning && typeof model.nextInSeconds === "number") ? model.nextInSeconds : -1
+                intervalPaused: app.actionsRunning && !!model.intervalPaused
+                intervalStartsInSeconds: (app.actionsRunning && typeof model.intervalStartsInSeconds === "number") ? model.intervalStartsInSeconds : -1
 
                 nextFixedH: (app.actionsRunning && typeof model.nextFixedH === "number") ? model.nextFixedH : -1
                 nextFixedM: (app.actionsRunning && typeof model.nextFixedM === "number") ? model.nextFixedM : -1
@@ -1338,6 +1384,7 @@ ApplicationWindow {
                 onFixedTimeEdited: function(v) { app.setRole(index, "fixedTime", v) }
                 onStartTimeEdited: function(v) { app.setRole(index, "startTime", v) }
                 onEndTimeEdited: function(v) { app.setRole(index, "endTime", v) }
+                onStartAnchorTimeEdited: function(v) { app.setRole(index, "startAnchorTime", v) }
                 onIntervalMinutesEdited: function(v) { app.setRole(index, "intervalMinutes", v) }
                 onSoundEdited: function(v) {
                     app.setRole(index, "sound", v)
