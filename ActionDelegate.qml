@@ -13,9 +13,11 @@ Rectangle {
 
     readonly property color displayUnitColor: "#EBEDD3"
     readonly property color editUnitColor: "#C2F0C6"
-    color: root.expanded ? editUnitColor : displayUnitColor
+    readonly property color nextActionUnitColor: "#DFF5DF"
+    color: root.expanded ? editUnitColor : (root.nextAction ? nextActionUnitColor : displayUnitColor)
 
     property bool expanded: false
+    property bool nextAction: false
 
     property string actionText
     property string mode              // "fixed" | "interval"

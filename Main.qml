@@ -356,7 +356,8 @@ ApplicationWindow {
                     durationSound: durationSound,
                     sound: (typeof o.sound === "string" && o.sound.trim().length > 0) ? o.sound : "Bell",
                     soundEnabled: (typeof o.soundEnabled === "boolean") ? o.soundEnabled : true,
-                    volume: (typeof o.volume === "number") ? o.volume : parseFloat(o.volume || 1.0)
+                    volume: (typeof o.volume === "number") ? o.volume : parseFloat(o.volume || 1.0),
+                    isNextAction: false
                 })
             }
 
@@ -448,7 +449,8 @@ ApplicationWindow {
             "durationSound": 1,
             "sound": "Bell",
             "soundEnabled": true,
-            "volume": 1.0
+            "volume": 1.0,
+            "isNextAction": false
         })
         actionModel.append({
             "alarmId": 2,
@@ -465,7 +467,8 @@ ApplicationWindow {
             "durationSound": 1,
             "sound": "Bell",
             "soundEnabled": true,
-            "volume": 1.0
+            "volume": 1.0,
+            "isNextAction": false
         })
     }
 
@@ -546,7 +549,8 @@ ApplicationWindow {
             "durationSound": 1,
             "sound": "Bell",
             "soundEnabled": true,
-            "volume": 0.5
+            "volume": 0.5,
+            "isNextAction": false
         })
 
         const idx = actionModel.count - 1
@@ -767,6 +771,7 @@ ApplicationWindow {
 
         // echtes Scheduling einmalig
         scheduleAllAlarms(nowMs)
+        sortAndMarkNextAction()
 
         // optional: explizit einmal tick, falls du es sofort willst
         schedulerStep()
@@ -805,6 +810,150 @@ ApplicationWindow {
             scheduleTaskManagerForIndex(i, nowMs) // Android alarm scheduling
     }
 
+    function actionIdentity(o, fallbackIndex) {
+        const id = (typeof o.alarmId === "number") ? o.alarmId : parseInt(o.alarmId || 0)
+        if (id > 0)
+            return "alarm:" + id
+        return "idx:" + fallbackIndex + ":" + (o.text || "")
+    }
+
+    function actionSnapshot(o, i) {
+        return {
+            alarmId: (typeof o.alarmId === "number") ? o.alarmId : parseInt(o.alarmId || 0),
+            text: (o.text ?? "Neue Aktion"),
+            mode: (o.mode === "interval" ? "interval" : "fixed"),
+            fixedTime: (o.fixedTime ?? "00:00"),
+            startTime: (o.startTime ?? ""),
+            endTime: (o.endTime ?? ""),
+            startAnchorTime: (o.startAnchorTime ?? Qt.formatTime(new Date(), "HH:mm")),
+            startAnchorMs: (typeof o.startAnchorMs === "number") ? o.startAnchorMs : parseFloat(o.startAnchorMs || 0.0),
+            intervalPaused: !!o.intervalPaused,
+            intervalStartsInSeconds: (typeof o.intervalStartsInSeconds === "number") ? o.intervalStartsInSeconds : -1,
+            intervalMinutes: (typeof o.intervalMinutes === "number") ? o.intervalMinutes : parseInt(o.intervalMinutes || 0),
+            durationSound: (typeof o.durationSound === "number" && !isNaN(o.durationSound)) ? o.durationSound : 1,
+            sound: (o.sound ?? "Bell"),
+            soundEnabled: (typeof o.soundEnabled === "boolean") ? o.soundEnabled : true,
+            volume: (typeof o.volume === "number") ? o.volume : parseFloat(o.volume || 1.0),
+            nextFireMs: (typeof o.nextFireMs === "number") ? o.nextFireMs : parseInt(o.nextFireMs || 0),
+            lastFiredMs: (typeof o.lastFiredMs === "number") ? o.lastFiredMs : parseInt(o.lastFiredMs || 0),
+            nextInMinutes: (typeof o.nextInMinutes === "number") ? o.nextInMinutes : -1,
+            nextInSeconds: (typeof o.nextInSeconds === "number") ? o.nextInSeconds : -1,
+            nextFixedH: (typeof o.nextFixedH === "number") ? o.nextFixedH : -1,
+            nextFixedM: (typeof o.nextFixedM === "number") ? o.nextFixedM : -1,
+            nextFixedS: (typeof o.nextFixedS === "number") ? o.nextFixedS : -1,
+            isNextAction: !!o.isNextAction,
+            _originalIndex: i,
+            _identity: actionIdentity(o, i)
+        }
+    }
+
+    function actionSortMs(o, nowMs) {
+        if (!actionsRunning)
+            return 0
+
+        const enabled = (o.soundEnabled === undefined) ? true : !!o.soundEnabled
+        const vol = (typeof o.volume === "number" && !isNaN(o.volume)) ? o.volume : parseFloat(o.volume || 0)
+        if (!enabled || vol <= 0)
+            return 0
+
+        if ((o.mode || "fixed") === "interval") {
+            const startsInSeconds = (typeof o.intervalStartsInSeconds === "number") ? o.intervalStartsInSeconds : -1
+            if (o.intervalPaused && startsInSeconds >= 0)
+                return nowMs + startsInSeconds * 1000
+
+            const seconds = (typeof o.nextInSeconds === "number") ? o.nextInSeconds : -1
+            if (seconds >= 0)
+                return nowMs + seconds * 1000
+
+            const minutes = (typeof o.nextInMinutes === "number") ? o.nextInMinutes : -1
+            if (minutes >= 0)
+                return nowMs + minutes * 60000
+        } else {
+            const h = (typeof o.nextFixedH === "number") ? o.nextFixedH : -1
+            const m = (typeof o.nextFixedM === "number") ? o.nextFixedM : -1
+            const s = (typeof o.nextFixedS === "number") ? o.nextFixedS : -1
+            if (h >= 0 && m >= 0) {
+                const seconds = h * 3600 + m * 60 + (s >= 0 ? s : 0)
+                return nowMs + seconds * 1000
+            }
+        }
+
+        const next = (typeof o.nextFireMs === "number") ? o.nextFireMs : parseInt(o.nextFireMs || 0)
+        return (!isNaN(next) && next > 0) ? next : 0
+    }
+
+    function isActionActiveForOrdering(o) {
+        if (!actionsRunning)
+            return false
+        const sortMs = (typeof o._sortMs === "number") ? o._sortMs : actionSortMs(o, Date.now())
+        return sortMs > 0
+    }
+
+    function sortAndMarkNextAction() {
+        if (actionModel.count <= 0)
+            return
+
+        const expandedIdentity = (expandedIndex >= 0 && expandedIndex < actionModel.count)
+            ? actionIdentity(actionModel.get(expandedIndex), expandedIndex)
+            : ""
+        const nowMs = Date.now()
+        const entries = []
+        for (let i = 0; i < actionModel.count; ++i) {
+            const entry = actionSnapshot(actionModel.get(i), i)
+            entry._sortMs = actionSortMs(entry, nowMs)
+            entries.push(entry)
+        }
+
+        entries.sort(function(a, b) {
+            const activeA = isActionActiveForOrdering(a)
+            const activeB = isActionActiveForOrdering(b)
+            if (activeA && activeB) {
+                if (a._sortMs !== b._sortMs)
+                    return a._sortMs - b._sortMs
+                return a._originalIndex - b._originalIndex
+            }
+            if (activeA !== activeB)
+                return activeA ? -1 : 1
+            return a._originalIndex - b._originalIndex
+        })
+
+        let firstActive = -1
+        for (let j = 0; j < entries.length; ++j) {
+            if (isActionActiveForOrdering(entries[j])) {
+                firstActive = j
+                break
+            }
+        }
+
+        let changed = false
+        for (let k = 0; k < entries.length; ++k) {
+            const shouldBeNext = k === firstActive
+            if (entries[k].isNextAction !== shouldBeNext) {
+                entries[k].isNextAction = shouldBeNext
+                changed = true
+            }
+            if (entries[k]._identity !== actionIdentity(actionModel.get(k), k))
+                changed = true
+        }
+
+        if (!changed)
+            return
+
+        actionModel.clear()
+        expandedIndex = -1
+        for (let n = 0; n < entries.length; ++n) {
+            const entry = entries[n]
+            delete entry._originalIndex
+            delete entry._sortMs
+            const identity = entry._identity
+            delete entry._identity
+            actionModel.append(entry)
+            if (identity === expandedIdentity)
+                expandedIndex = n
+        }
+        saveNow()
+    }
+
     function stopActions() {
         dbg("[Main] stopActions()")
         actionsRunning = false
@@ -824,8 +973,10 @@ ApplicationWindow {
             actionModel.setProperty(i, "nextFireMs", 0)
             actionModel.setProperty(i, "lastFiredMs", 0)
 
-            actionModel.setProperty(i, "AlarmId", 0)
+            actionModel.setProperty(i, "alarmId", 0)
+            actionModel.setProperty(i, "isNextAction", false)
         }
+        sortAndMarkNextAction()
     }
 
 
@@ -1008,6 +1159,8 @@ ApplicationWindow {
                 _setFixedCountdown(i, nextAt, nowMs)
             }
         }
+
+        sortAndMarkNextAction()
     }
 
     function schedulerStep() {
@@ -1076,6 +1229,8 @@ ApplicationWindow {
                 }
             }
         }
+
+        sortAndMarkNextAction()
     }
 
     function parseHHMMToMinutes(t) {
@@ -1366,6 +1521,7 @@ ApplicationWindow {
                 durationSound: (typeof model.durationSound === "number" && !isNaN(model.durationSound))
                               ? model.durationSound
                               : 1
+                nextAction: app.actionsRunning && typeof model.isNextAction === "boolean" && model.isNextAction
 
                 onDurationSoundEdited: function(v) { app.setRole(index, "durationSound", v) }
 
