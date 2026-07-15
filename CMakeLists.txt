@@ -60,8 +60,10 @@ target_link_libraries(appDailyActionReminder
 )
 
 set_target_properties(appDailyActionReminder PROPERTIES
+    OUTPUT_NAME "DailyActions"
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+    MACOSX_BUNDLE_BUNDLE_NAME "DailyActions"
     MACOSX_BUNDLE TRUE
     WIN32_EXECUTABLE TRUE
 )
@@ -79,6 +81,7 @@ if(ANDROID)
     # Java/Manifest/Gradle unter ./android (android/src/org/dailyactions/...)
     set_target_properties(appDailyActionReminder PROPERTIES
         QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
+        QT_ANDROID_APP_NAME "DailyActions"
     )
 endif()
 
@@ -87,7 +90,12 @@ if(IOS)
     target_sources(appDailyActionReminder PRIVATE
         soundtaskmanagerios.h
         soundtaskmanagerios.mm
+        icons/Assets.xcassets
         ${DAILY_ACTION_SOUND_FILES}
+    )
+
+    set_source_files_properties(icons/Assets.xcassets
+        PROPERTIES MACOSX_PACKAGE_LOCATION Resources
     )
 
     set_source_files_properties(${DAILY_ACTION_SOUND_FILES}
@@ -109,6 +117,10 @@ if(IOS)
     endforeach()
 
     set_target_properties(appDailyActionReminder PROPERTIES
+        XCODE_ATTRIBUTE_PRODUCT_NAME "DailyActions"
+        XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleDisplayName "DailyActions"
+        XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleName "DailyActions"
+        XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
         XCODE_ATTRIBUTE_FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*] "$(inherited) ${QT_IOS_FFMPEG_DIR}/libavformat.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libavcodec.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libavutil.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libswresample.xcframework/ios-arm64 ${QT_IOS_FFMPEG_DIR}/libswscale.xcframework/ios-arm64"
         XCODE_ATTRIBUTE_FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*] "$(inherited) ${QT_IOS_FFMPEG_DIR}/libavformat.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libavcodec.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libavutil.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libswresample.xcframework/ios-x86_64-simulator ${QT_IOS_FFMPEG_DIR}/libswscale.xcframework/ios-x86_64-simulator"
         XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "$(inherited) @executable_path/Frameworks @loader_path/Frameworks"

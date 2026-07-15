@@ -6,9 +6,13 @@
 #include <QMetaObject>
 #include <QMutexLocker>
 #include <QSettings>
+#include <QSet>
 #include <QTime>
 #include <QUrl>
+#include <QVector>
 #include <QtGlobal>
+
+#include <algorithm>
 
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
@@ -68,7 +72,9 @@ static void playNotificationSoundFromUserInfo(NSDictionary *userInfo)
 
 namespace {
 
-constexpr int kMaxPendingIntervalNotifications = 60;
+// iOS keeps only a limited number of pending local notifications per app.
+// Interval actions are therefore represented as daily repeating wall-clock times.
+constexpr int kMaxDailyIntervalNotifications = 48;
 
 QString keyNextAt(int id) { return QStringLiteral("SoundTaskManagerIos/nextAtMs_%1").arg(id); }
 QString keyMode(int id) { return QStringLiteral("SoundTaskManagerIos/mode_%1").arg(id); }
@@ -325,6 +331,67 @@ NSDateComponents *dailyComponentsForHHMM(const QString &hhmm)
     return components;
 }
 
+NSDateComponents *dailyComponentsForSecondOfDay(int secondOfDay)
+{
+    secondOfDay = qBound(0, secondOfDay, 24 * 60 * 60 - 1);
+    NSDateComponents *components = [[NSDateComponents alloc] init];
+    components.hour = secondOfDay / 3600;
+    components.minute = (secondOfDay % 3600) / 60;
+    components.second = secondOfDay % 60;
+    return components;
+}
+
+bool secondInDailyWindow(int secondOfDay, int startSecond, int endSecond)
+{
+    if (startSecond == endSecond)
+        return true;
+    if (endSecond > startSecond)
+        return secondOfDay >= startSecond && secondOfDay < endSecond;
+    return secondOfDay >= startSecond || secondOfDay < endSecond;
+}
+
+QVector<int> dailyIntervalFireSeconds(const QString &startTime,
+                                      const QString &endTime,
+                                      const QString &startAnchorTime,
+                                      int intervalSeconds)
+{
+    QVector<int> times;
+    if (intervalSeconds <= 0)
+        return times;
+
+    const int startMinRaw = parseHHMMToMinutes(startTime);
+    const int endMinRaw = parseHHMMToMinutes(endTime);
+    const int anchorMinRaw = parseHHMMToMinutes(startAnchorTime);
+    const int startSecond = startMinRaw >= 0 ? startMinRaw * 60 : 0;
+    int endSecond = endMinRaw >= 0 ? endMinRaw * 60 : 24 * 60 * 60;
+    if (endSecond >= 24 * 60 * 60)
+        endSecond = 0;
+
+    const QTime fallbackAnchor = QTime::currentTime();
+    const int anchorSecond = anchorMinRaw >= 0
+            ? anchorMinRaw * 60
+            : fallbackAnchor.hour() * 3600 + fallbackAnchor.minute() * 60;
+
+    QSet<int> seen;
+    const int horizon = qMax(1, (24 * 60 * 60 + intervalSeconds - 1) / intervalSeconds) + 2;
+    for (int k = -horizon; k <= horizon; ++k) {
+        int second = (anchorSecond + k * intervalSeconds) % (24 * 60 * 60);
+        if (second < 0)
+            second += 24 * 60 * 60;
+        if (!secondInDailyWindow(second, startSecond, endSecond))
+            continue;
+        if (seen.contains(second))
+            continue;
+        seen.insert(second);
+        times.push_back(second);
+    }
+
+    std::sort(times.begin(), times.end());
+    if (times.size() > kMaxDailyIntervalNotifications)
+        times.resize(kMaxDailyIntervalNotifications);
+    return times;
+}
+
 bool addRequest(const QString &identifier,
                 UNMutableNotificationContent *content,
                 UNNotificationTrigger *trigger,
@@ -558,8 +625,12 @@ int SoundTaskManagerIos::startIntervalSoundTask(const QString &rawSound,
         return -1;
 
     const int id = nextId();
-    const QString startTime = QDateTime::fromMSecsSinceEpoch(startTimeMs).toLocalTime().time().toString(QStringLiteral("HH:mm"));
-    const QString endTime = QDateTime::fromMSecsSinceEpoch(endTimeMs).toLocalTime().time().toString(QStringLiteral("HH:mm"));
+    const QString startTime = startTimeMs > 0
+            ? QDateTime::fromMSecsSinceEpoch(startTimeMs).toLocalTime().time().toString(QStringLiteral("HH:mm"))
+            : QString();
+    const QString endTime = endTimeMs > 0
+            ? QDateTime::fromMSecsSinceEpoch(endTimeMs).toLocalTime().time().toString(QStringLiteral("HH:mm"))
+            : QString();
     const QString startAnchorTime = QDateTime::fromMSecsSinceEpoch(startAnchorTimeMs > 0 ? startAnchorTimeMs : QDateTime::currentMSecsSinceEpoch()).toLocalTime().time().toString(QStringLiteral("HH:mm"));
     const qint64 firstAt = computeNextIntervalFireMs(QDateTime::currentMSecsSinceEpoch(),
                                                      startTime,
@@ -624,21 +695,21 @@ bool SoundTaskManagerIos::scheduleWithParams(qint64 triggerAtMillis,
                                                                     0,
                                                                     seconds);
 
-        qint64 at = firstAt;
-        for (int i = 0; i < kMaxPendingIntervalNotifications && at > 0; ++i) {
+        const QVector<int> fireSeconds = dailyIntervalFireSeconds(startTime, endTime, startAnchorTime, seconds);
+        for (int i = 0; i < fireSeconds.size(); ++i) {
             UNCalendarNotificationTrigger *trigger =
-                [UNCalendarNotificationTrigger triggerWithDateMatchingComponents:componentsForMs(at)
-                                                                         repeats:NO];
+                [UNCalendarNotificationTrigger triggerWithDateMatchingComponents:dailyComponentsForSecondOfDay(fireSeconds.at(i))
+                                                                         repeats:YES];
             ok = addRequest(intervalIdentifier(requestId, i), content, trigger, &errorText);
             if (!ok)
                 break;
 
             scheduledCount++;
-            const qint64 nextAt = computeNextIntervalFireMs(at + 1, startTime, endTime, startAnchorTime, firstAt, seconds);
-            if (nextAt <= at)
-                break;
-            at = nextAt;
         }
+
+        ok = ok && scheduledCount > 0;
+        if (!ok && errorText.isEmpty())
+            errorText = QStringLiteral("no interval fire times in daily window");
     } else {
         if (firstAt <= 0)
             firstAt = computeNextFixedFireMs(QDateTime::currentMSecsSinceEpoch(), fixedTime);

@@ -591,6 +591,7 @@ ApplicationWindow {
         dbg("[Main] startup actionsRunning=", actionsRunning)
         if (app.actionsRunning) {
             schedulerInit()
+            scheduleAllAlarms(Date.now())
             syncUiFromAndroidNextAtOnStartup()
         } else {
             stopActions()

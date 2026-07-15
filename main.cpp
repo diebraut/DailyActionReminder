@@ -106,7 +106,7 @@ int main(int argc, char *argv[])
 
     QCoreApplication::setOrganizationName("RolandPrinz");
     QCoreApplication::setOrganizationDomain("rolandprinz.local");
-    QCoreApplication::setApplicationName("DailyActionReminder");
+    QCoreApplication::setApplicationName("DailyActions");
 
     AppStorage storage;
 

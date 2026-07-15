@@ -43,7 +43,7 @@ public class AlarmReceiver extends BroadcastReceiver {
     // - Android NotificationChannel settings are sticky once created.
     // - We bump the channel id so existing installs immediately get a SILENT channel.
     private static final String CH_ID   = "dailyactions_reminder_silent_v2";
-    private static final String CH_NAME = "DailyActionReminder";
+    private static final String CH_NAME = "DailyActions";
     private static final String CH_DESC = "Aktionen/Erinnerungen";
 
     // Hard stop so the beep stays short
