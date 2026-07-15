@@ -105,6 +105,7 @@ if(IOS)
     target_link_libraries(appDailyActionReminder PRIVATE
         "-framework AVFoundation"
         "-framework UserNotifications"
+        "-framework WatchConnectivity"
     )
 
     set(QT_IOS_FFMPEG_DIR "${Qt6_DIR}/../../ffmpeg")

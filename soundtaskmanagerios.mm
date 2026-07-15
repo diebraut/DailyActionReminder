@@ -16,7 +16,9 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <UserNotifications/UserNotifications.h>
+#import <WatchConnectivity/WatchConnectivity.h>
 
 static NSMutableArray<AVAudioPlayer *> *dailyActionsActivePlayers()
 {
@@ -50,7 +52,14 @@ static void playNotificationSoundFromUserInfo(NSDictionary *userInfo)
     });
 }
 
+namespace {
+void syncLastActionToWatch(UNNotification *notification, SoundTaskManagerIos *self);
+}
+
 @interface DailyActionsNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+
+@interface DailyActionsWatchSessionDelegate : NSObject <WCSessionDelegate>
 @end
 
 @implementation DailyActionsNotificationDelegate
@@ -62,10 +71,44 @@ static void playNotificationSoundFromUserInfo(NSDictionary *userInfo)
     Q_UNUSED(center);
 
     playNotificationSoundFromUserInfo(notification.request.content.userInfo);
+    syncLastActionToWatch(notification, nil);
 
     completionHandler(UNNotificationPresentationOptionBanner |
                       UNNotificationPresentationOptionList |
                       UNNotificationPresentationOptionSound);
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+didReceiveNotificationResponse:(UNNotificationResponse *)response
+         withCompletionHandler:(void (^)(void))completionHandler
+{
+    Q_UNUSED(center);
+
+    syncLastActionToWatch(response.notification, nil);
+    completionHandler();
+}
+
+@end
+
+@implementation DailyActionsWatchSessionDelegate
+
+- (void)session:(WCSession *)session
+activationDidCompleteWithState:(WCSessionActivationState)activationState
+          error:(NSError *)error
+{
+    Q_UNUSED(session);
+    Q_UNUSED(activationState);
+    Q_UNUSED(error);
+}
+
+- (void)sessionDidBecomeInactive:(WCSession *)session
+{
+    Q_UNUSED(session);
+}
+
+- (void)sessionDidDeactivate:(WCSession *)session
+{
+    [session activateSession];
 }
 
 @end
@@ -95,10 +138,18 @@ QString fromNSString(NSString *value)
 }
 
 void postLog(SoundTaskManagerIos *self, const QString &line);
+void syncLastActionToWatch(UNNotification *notification, SoundTaskManagerIos *self);
+void syncLatestDeliveredNotificationToWatch(SoundTaskManagerIos *self);
 
 DailyActionsNotificationDelegate *notificationDelegate()
 {
     static DailyActionsNotificationDelegate *delegate = [[DailyActionsNotificationDelegate alloc] init];
+    return delegate;
+}
+
+DailyActionsWatchSessionDelegate *watchSessionDelegate()
+{
+    static DailyActionsWatchSessionDelegate *delegate = [[DailyActionsWatchSessionDelegate alloc] init];
     return delegate;
 }
 
@@ -131,6 +182,111 @@ void postLog(SoundTaskManagerIos *self, const QString &line)
     QMetaObject::invokeMethod(self, [self, line]() {
         emit self->logLine(line);
     }, Qt::QueuedConnection);
+}
+
+void configureWatchSession(SoundTaskManagerIos *self)
+{
+    if (![WCSession isSupported]) {
+        postLog(self, QStringLiteral("[Watch] WCSession not supported"));
+        return;
+    }
+
+    WCSession *session = [WCSession defaultSession];
+    session.delegate = watchSessionDelegate();
+    [session activateSession];
+    postLog(self, QStringLiteral("[Watch] WCSession activation requested"));
+}
+
+void installApplicationActiveObserver(SoundTaskManagerIos *self)
+{
+    static bool installed = false;
+    if (installed)
+        return;
+    installed = true;
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *) {
+        syncLatestDeliveredNotificationToWatch(self);
+    }];
+}
+
+void syncLastActionToWatch(NSString *actionText, NSDate *date, NSNumber *requestId, SoundTaskManagerIos *self)
+{
+    if (actionText.length == 0)
+        return;
+
+    QSettings settings;
+    const qint64 firedAtMs = qint64([date timeIntervalSince1970] * 1000.0);
+    settings.setValue(QStringLiteral("Watch/lastActionText"), fromNSString(actionText));
+    settings.setValue(QStringLiteral("Watch/lastActionAtMs"), firedAtMs);
+
+    if (![WCSession isSupported]) {
+        postLog(self, QStringLiteral("[Watch] skipped lastAction sync, WCSession unsupported: %1")
+                          .arg(fromNSString(actionText)));
+        return;
+    }
+
+    WCSession *session = [WCSession defaultSession];
+    if (session.activationState == WCSessionActivationStateNotActivated) {
+        session.delegate = watchSessionDelegate();
+        [session activateSession];
+    }
+
+    NSMutableDictionary *payload = [@{
+        @"type": @"lastAction",
+        @"lastActionText": actionText,
+        @"lastActionAtMs": @(firedAtMs),
+        @"updatedAtMs": @(qint64([[NSDate date] timeIntervalSince1970] * 1000.0))
+    } mutableCopy];
+    if (requestId)
+        payload[@"requestId"] = requestId;
+
+    NSError *error = nil;
+    if (![session updateApplicationContext:payload error:&error]) {
+        postLog(self, QStringLiteral("[Watch] updateApplicationContext failed: %1")
+                          .arg(fromNSString(error.localizedDescription)));
+    } else {
+        postLog(self, QStringLiteral("[Watch] lastAction synced: %1").arg(fromNSString(actionText)));
+    }
+
+    if (session.paired && session.watchAppInstalled)
+        [session transferUserInfo:payload];
+}
+
+void syncLastActionToWatch(UNNotification *notification, SoundTaskManagerIos *self)
+{
+    if (!notification)
+        return;
+
+    NSDictionary *userInfo = notification.request.content.userInfo;
+    NSString *actionText = userInfo[@"actionText"];
+    if (actionText.length == 0)
+        actionText = notification.request.content.body;
+
+    NSNumber *requestId = userInfo[@"requestId"];
+    syncLastActionToWatch(actionText, notification.date ?: [NSDate date], requestId, self);
+}
+
+void syncLatestDeliveredNotificationToWatch(SoundTaskManagerIos *self)
+{
+    [[UNUserNotificationCenter currentNotificationCenter] getDeliveredNotificationsWithCompletionHandler:
+     ^(NSArray<UNNotification *> *notifications) {
+        UNNotification *latest = nil;
+        for (UNNotification *notification in notifications) {
+            NSDictionary *userInfo = notification.request.content.userInfo;
+            NSString *source = userInfo[@"source"];
+            if (![source isEqualToString:@"DailyActions"])
+                continue;
+
+            if (!latest || [notification.date compare:latest.date] == NSOrderedDescending)
+                latest = notification;
+        }
+
+        if (latest)
+            syncLastActionToWatch(latest, self);
+    }];
 }
 
 QString identifierPrefix(int requestId)
@@ -294,6 +450,7 @@ qint64 computeNextIntervalFireMs(qint64 nowMs,
 UNMutableNotificationContent *makeContent(const QString &title,
                                           const QString &text,
                                           const QString &soundName,
+                                          int requestId,
                                           float volume01,
                                           SoundTaskManagerIos *self)
 {
@@ -303,6 +460,9 @@ UNMutableNotificationContent *makeContent(const QString &title,
     content.sound = notificationSound(self, soundName);
     const QString normalized = normalizeSoundName(soundName);
     content.userInfo = @{
+        @"source": @"DailyActions",
+        @"actionText": toNSString(text),
+        @"requestId": @(requestId),
         @"soundName": toNSString(normalized),
         @"volume": @(qBound(0.0f, volume01, 1.0f))
     };
@@ -564,6 +724,9 @@ void SoundTaskManagerIos::ensure()
 
     dispatch_async(dispatch_get_main_queue(), ^{
         configureAudioSession(self);
+        configureWatchSession(self);
+        installApplicationActiveObserver(self);
+        syncLatestDeliveredNotificationToWatch(self);
 
         UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
         center.delegate = notificationDelegate();
@@ -680,7 +843,7 @@ bool SoundTaskManagerIos::scheduleWithParams(qint64 triggerAtMillis,
     const QString normalizedMode = mode.compare(QStringLiteral("interval"), Qt::CaseInsensitive) == 0
                                        ? QStringLiteral("interval")
                                        : QStringLiteral("fixedTime");
-    UNMutableNotificationContent *content = makeContent(title, text, soundName, volume01, this);
+    UNMutableNotificationContent *content = makeContent(title, text, soundName, requestId, volume01, this);
     QString errorText;
     bool ok = true;
     qint64 firstAt = triggerAtMillis;
